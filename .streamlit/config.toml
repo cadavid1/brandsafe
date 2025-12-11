@@ -1,0 +1,12 @@
+[theme]
+primaryColor = "#4F46E5"              # Indigo-600 - primary actions
+backgroundColor = "#FFFFFF"            # White - main background
+secondaryBackgroundColor = "#F9FAFB"  # Gray-50 - widgets/cards
+textColor = "#111827"                 # Gray-900 - main text
+font = "sans serif"
+
+[server]
+# Maximum upload size in MB (1 GB = 1024 MB)
+maxUploadSize = 1024
+enableCORS = false
+browser.gatherUsageStats = false

@@ -1,0 +1,16 @@
+streamlit
+pandas
+bcrypt
+google-generativeai
+google-genai
+opencv-python-headless
+pillow
+google-api-python-client>=2.110.0
+google-auth>=2.25.0
+google-auth-oauthlib>=1.2.0
+google-auth-httplib2>=0.2.0
+reportlab
+openpyxl
+markdown
+yt-dlp
+youtube-transcript-api

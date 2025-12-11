@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+dist/
+*.egg-info/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Data files (contains videos and database)
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Video files
+*.mp4
+*.mov
+*.avi
+*.webm
+*.mkv
+*.flv
+
+# Environment variables
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Mac
+.DS_Store
+
+# Logs
+*.log
+
+# Exports
+exports/
+*.csv
+*.pdf
+
+# API Keys
+credentials.json
+*.json
+!requirements.json
