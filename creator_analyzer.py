@@ -11,6 +11,7 @@ from storage import get_db
 from platform_clients import get_platform_client, PlatformClientError
 from gemini_client import GeminiClient, GeminiAPIError
 from youtube_video_handler import get_video_content, cleanup_video_file, YouTubeVideoError
+from deep_research_client import DeepResearchClient, DeepResearchError
 from config import (
     ANALYSIS_TIERS,
     DEFAULT_TIME_RANGE_DAYS,
@@ -39,13 +40,15 @@ class CreatorAnalyzer:
         Initialize creator analyzer
 
         Args:
-            gemini_api_key: Gemini API key for content analysis
+            gemini_api_key: Gemini API key for content analysis and Deep Research
             youtube_api_keys: List of YouTube API keys for rotation
         """
         self.gemini_client = GeminiClient(gemini_api_key)
+        self.deep_research_client = DeepResearchClient(gemini_api_key)
         self.youtube_api_keys = youtube_api_keys or []
         self.db = get_db()
         self._last_token_usage = None
+        self._deep_research_cost = 0.0
 
     def analyze_creator(
         self,
@@ -77,13 +80,7 @@ class CreatorAnalyzer:
             print(f"[ANALYSIS START] Creator ID: {creator_id}, Brief ID: {brief_id}")
             print(f"{'='*60}")
 
-            # Get analysis tier config
-            tier_config = ANALYSIS_TIERS.get(analysis_depth, ANALYSIS_TIERS["standard"])
-            print(f"[CONFIG] Analysis depth: {analysis_depth}")
-            print(f"[CONFIG] Max posts per platform: {tier_config['max_posts']}")
-            print(f"[CONFIG] Analyze videos: {tier_config['analyze_videos']}")
-
-            # Step 1: Get creator and brief info
+            # Step 1: Get creator and brief info (need this first to get user_id)
             if progress_callback:
                 progress_callback("Loading creator information", 0.0)
 
@@ -92,6 +89,22 @@ class CreatorAnalyzer:
             if not creator:
                 raise CreatorAnalysisError(f"Creator not found: {creator_id}")
             print(f"[SUCCESS] Found creator: {creator['name']}")
+
+            # Set user_id for settings lookups
+            self.user_id = creator['user_id']
+
+            # Get analysis tier config
+            tier_config = ANALYSIS_TIERS.get(analysis_depth, ANALYSIS_TIERS["standard"]).copy()
+
+            # Override max_posts with custom setting if available
+            custom_max_posts_key = f"tier_{analysis_depth}_max_posts"
+            custom_max_posts = self.db.get_setting(self.user_id, custom_max_posts_key, "")
+            if custom_max_posts:
+                tier_config['max_posts'] = int(custom_max_posts)
+
+            print(f"[CONFIG] Analysis depth: {analysis_depth}")
+            print(f"[CONFIG] Max posts per platform: {tier_config['max_posts']}")
+            print(f"[CONFIG] Analyze videos: {tier_config['analyze_videos']}")
 
             # Fetch brief
             print(f"[STEP 1/5] Loading brief information...")
@@ -154,10 +167,25 @@ class CreatorAnalyzer:
                 print(f"  URL: {profile_url}")
 
                 try:
-                    # Get platform client
+                    # Get platform client with appropriate credentials
                     if platform == 'youtube':
                         print(f"  [INFO] Using YouTube API (keys available: {len(self.youtube_api_keys)})")
                         client = get_platform_client(platform, api_keys=self.youtube_api_keys)
+                    elif platform == 'instagram':
+                        # Get Instagram credentials from database
+                        instagram_username = self.db.get_setting(creator['user_id'], "instagram_username", "")
+                        instagram_password = self.db.get_setting(creator['user_id'], "instagram_password", "")
+
+                        if instagram_username:
+                            print(f"  [INFO] Using Instagram authenticated access (@{instagram_username})")
+                        else:
+                            print(f"  [INFO] Using Instagram anonymous access (limited)")
+
+                        client = get_platform_client(
+                            platform,
+                            instagram_username=instagram_username,
+                            instagram_password=instagram_password
+                        )
                     else:
                         print(f"  [INFO] Using web scraping for {platform}")
                         client = get_platform_client(platform)
@@ -202,6 +230,21 @@ class CreatorAnalyzer:
                         # Save posts to database
                         for post in posts:
                             self.db.save_post_analysis(account_id, post)
+
+                    # Fetch demographics data if Deep Research is enabled
+                    if tier_config.get('deep_research', False):
+                        demographics = self._get_demographics_data(
+                            creator_name=creator['name'],
+                            social_account_id=account_id,
+                            platform=platform,
+                            profile_url=profile_url,
+                            tier_config=tier_config
+                        )
+
+                        if demographics:
+                            # Add demographics to platform stats for reporting
+                            platform_stats[platform]['demographics'] = demographics
+                            print(f"  [SUCCESS] Demographics data added to {platform} stats")
 
                 except PlatformClientError as e:
                     print(f"  [ERROR] Failed to fetch {platform} data: {e}")
@@ -329,9 +372,12 @@ class CreatorAnalyzer:
         Returns:
             Content analysis results
         """
+        # Get custom post limit from settings (default: 20)
+        posts_limit = int(self.db.get_setting(self.user_id, "posts_for_gemini_analysis", "20"))
+
         # Prepare content summary for Gemini
         content_summary = []
-        for post in posts[:20]:  # Limit to top 20 posts to save on tokens
+        for post in posts[:posts_limit]:  # Use configurable limit
             platform = post.get('platform', '')
             caption = post.get('caption', post.get('title', ''))
             likes = post.get('likes_count', 0)
@@ -365,11 +411,15 @@ Provide your analysis in the specified JSON format.
                     'key_observations': ['Analysis skipped: No API key configured']
                 }
 
+            # Get custom prompt from settings (default: CREATOR_ANALYSIS_SYSTEM_PROMPT)
+            custom_prompt = self.db.get_setting(self.user_id, "custom_analysis_prompt", "")
+            analysis_prompt = custom_prompt if custom_prompt else CREATOR_ANALYSIS_SYSTEM_PROMPT
+
             result = call_gemini_text(
                 api_key=self.gemini_client.api_key,
                 model_name=DEFAULT_MODEL,
                 prompt=prompt,
-                system_instruction=CREATOR_ANALYSIS_SYSTEM_PROMPT,
+                system_instruction=analysis_prompt,
                 response_mime_type="application/json"
             )
 
@@ -588,6 +638,146 @@ Focus on visual elements, tone, and overall presentation quality."""
             print(f"      [ERROR] Video file analysis failed: {e}")
             return None
 
+    def _get_demographics_data(
+        self,
+        creator_name: str,
+        social_account_id: int,
+        platform: str,
+        profile_url: str,
+        tier_config: Dict
+    ) -> Optional[Dict]:
+        """
+        Get demographics data for a creator's social account
+
+        Checks cache first, then uses Deep Research if needed
+
+        Args:
+            creator_name: Creator's name
+            social_account_id: Social account ID
+            platform: Platform name
+            profile_url: Profile URL
+            tier_config: Analysis tier configuration
+
+        Returns:
+            Demographics dictionary or None
+        """
+        # Check if Deep Research is enabled for this tier
+        if not tier_config.get('deep_research', False):
+            print(f"  [SKIP] Deep Research not enabled for this tier")
+            return None
+
+        # Check if demographics query is requested
+        deep_research_queries = tier_config.get('deep_research_queries', [])
+        if 'demographics' not in deep_research_queries:
+            print(f"  [SKIP] Demographics research not requested")
+            return None
+
+        # First, check if we have cached demographics
+        print(f"  [DEMOGRAPHICS] Checking cache for {platform} account...")
+        demographics = self.db.get_demographics_data(social_account_id)
+
+        if demographics:
+            # Check if data is still fresh (within cache period)
+            cache_days = tier_config.get('deep_research_cache_days', 90)
+            from datetime import timedelta
+            snapshot_date_str = demographics.get('snapshot_date')
+
+            if snapshot_date_str:
+                try:
+                    snapshot_date = datetime.fromisoformat(snapshot_date_str)
+                    age_days = (datetime.now() - snapshot_date).days
+
+                    if age_days < cache_days:
+                        print(f"  [CACHE HIT] Using cached demographics ({age_days} days old)")
+                        return demographics
+                    else:
+                        print(f"  [CACHE EXPIRED] Demographics data is {age_days} days old (limit: {cache_days})")
+                except:
+                    pass
+
+        # No cache or expired, use Deep Research
+        print(f"  [DEEP RESEARCH] Fetching demographics for {creator_name} on {platform}...")
+
+        try:
+            # Generate query hash for deduplication
+            query_text = f"demographics_{creator_name}_{platform}_{profile_url}"
+            query_hash = DeepResearchClient.generate_query_hash(query_text)
+
+            # Check if we have this exact query cached
+            cached_query = self.db.get_cached_deep_research(query_hash)
+            if cached_query:
+                print(f"  [CACHE HIT] Found cached Deep Research query")
+                demographics_result = cached_query['result_data']
+                self._deep_research_cost += cached_query['cost']
+            else:
+                # Perform Deep Research
+                result = self.deep_research_client.research_creator_demographics(
+                    creator_name=creator_name,
+                    platform=platform,
+                    profile_url=profile_url,
+                    timeout=1800  # 30 minutes max
+                )
+
+                if result['status'] != 'completed':
+                    print(f"  [ERROR] Deep Research failed")
+                    return None
+
+                demographics_result = result['result']
+
+                # Calculate cost
+                cost = DeepResearchClient.calculate_cost(
+                    result['input_tokens'],
+                    result['output_tokens']
+                )
+                self._deep_research_cost += cost
+
+                print(f"  [SUCCESS] Demographics research completed (cost: ${cost:.4f})")
+
+                # Save to database cache
+                cache_expiration = datetime.now() + timedelta(days=tier_config.get('deep_research_cache_days', 90))
+
+                query_data = {
+                    'query_hash': query_hash,
+                    'query_text': query_text,
+                    'query_type': 'demographics',
+                    'creator_id': None,  # Will be set by caller if available
+                    'social_account_id': social_account_id,
+                    'interaction_id': result.get('interaction_id', ''),
+                    'status': 'completed',
+                    'result_data': demographics_result,
+                    'citations': demographics_result.get('sources', []),
+                    'cost': cost,
+                    'input_tokens': result['input_tokens'],
+                    'output_tokens': result['output_tokens'],
+                    'expires_at': cache_expiration.isoformat()
+                }
+
+                self.db.save_deep_research_query(query_data)
+
+            # Save demographics to platform_analytics
+            demographics_data = {
+                'gender': demographics_result.get('gender', {}),
+                'age_brackets': demographics_result.get('age_brackets', {}),
+                'geography': demographics_result.get('geography', []),
+                'languages': demographics_result.get('languages', []),
+                'interests': demographics_result.get('interests', []),
+                'data_source': 'deep_research',
+                'data_confidence': demographics_result.get('data_confidence', 'medium'),
+                'collected_at': datetime.now().isoformat(),
+                'expires_at': (datetime.now() + timedelta(days=tier_config.get('deep_research_cache_days', 90))).isoformat()
+            }
+
+            self.db.save_demographics_data(social_account_id, demographics_data)
+
+            return demographics_data
+
+        except DeepResearchError as e:
+            print(f"  [ERROR] Deep Research failed: {e}")
+            return None
+        except Exception as e:
+            print(f"  [ERROR] Demographics fetch failed: {e}")
+            return None
+
     def _calculate_overall_metrics(
         self,
         platform_stats: Dict,
@@ -675,6 +865,11 @@ Focus on visual elements, tone, and overall presentation quality."""
                     strengths.append(f"Strong brand safety in video content ({len(video_insights)} videos analyzed)")
                 elif avg_video_safety < 3:
                     concerns.append(f"Brand safety concerns in video content ({len(video_insights)} videos analyzed)")
+
+        # Add Deep Research cost
+        if self._deep_research_cost > 0:
+            analysis_cost += self._deep_research_cost
+            print(f"  [COST] Deep Research cost: ${self._deep_research_cost:.4f}")
 
         return {
             'brand_fit_score': round(brand_fit_score, 1),

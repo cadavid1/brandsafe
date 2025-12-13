@@ -9,7 +9,8 @@ from pathlib import Path
 from config import (
     MODELS, DEFAULT_MODEL, get_model_list, get_model_info,
     estimate_cost, format_cost, DEFAULT_SYSTEM_PROMPT, DRIVE_ENABLED,
-    ANALYSIS_TIERS, PLATFORM_CONFIGS, DEFAULT_TIME_RANGE_DAYS
+    ANALYSIS_TIERS, PLATFORM_CONFIGS, DEFAULT_TIME_RANGE_DAYS,
+    CREATOR_ANALYSIS_SYSTEM_PROMPT
 )
 from video_processor import (
     validate_and_process_video, delete_video_file,
@@ -74,60 +75,6 @@ ensure_video_directory()
 db = get_db()
 
 # Initialize Session State
-if "cujs" not in st.session_state:
-    # Load from database (skip for demo users)
-    if auth.is_demo_mode():
-        loaded_cujs = pd.DataFrame()
-    else:
-        loaded_cujs = db.get_cujs(user_id)
-
-    # Clean up any corrupt entries with None/empty IDs before loading
-    if not loaded_cujs.empty:
-        has_corrupt = False
-        for _, row in loaded_cujs.iterrows():
-            row_id = row['id']
-            if pd.isna(row_id) or not str(row_id).strip():
-                has_corrupt = True
-                try:
-                    # Delete corrupt entry from database
-                    conn = db._get_connection()
-                    cursor = conn.cursor()
-                    if pd.isna(row_id):
-                        cursor.execute("DELETE FROM cujs WHERE id IS NULL OR id = '' AND user_id = ?", (user_id,))
-                    else:
-                        cursor.execute("DELETE FROM cujs WHERE id = ? AND user_id = ?", (row_id, user_id))
-                    conn.commit()
-                    conn.close()
-                except Exception as e:
-                    print(f"Could not delete corrupt entry during init: {e}")
-
-        if has_corrupt:
-            # Reload after cleanup
-            loaded_cujs = db.get_cujs(user_id)
-
-    if loaded_cujs.empty:
-        # Start with empty dataframe - don't populate with sample data
-        st.session_state.cujs = pd.DataFrame(columns=['id', 'task', 'expectation'])
-    else:
-        # Filter out any remaining corrupt entries before loading into session state
-        clean_cujs = loaded_cujs[
-            loaded_cujs['id'].notna() &
-            (loaded_cujs['id'].astype(str).str.strip() != '')
-        ].copy()
-        st.session_state.cujs = clean_cujs
-
-if "videos" not in st.session_state:
-    # Load from database (skip for demo users)
-    if auth.is_demo_mode():
-        loaded_videos = pd.DataFrame()
-    else:
-        loaded_videos = db.get_videos(user_id)
-    if loaded_videos.empty:
-        # Start with empty dataframe - don't populate with sample data
-        st.session_state.videos = pd.DataFrame(columns=['id', 'name', 'status', 'file_path', 'duration', 'size_mb', 'description'])
-    else:
-        st.session_state.videos = loaded_videos
-
 if "results" not in st.session_state:
     # Load latest results from database (skip for demo users)
     if auth.is_demo_mode():
@@ -208,48 +155,19 @@ def check_first_time_user():
         )
         if is_first_time:
             st.info("""
-            👋 **Welcome to UXR CUJ Analysis!**
+            👋 **Welcome to BrandSafe Talent Analysis!**
 
-            This tool uses AI to analyze user session videos against Critical User Journeys (CUJs).
+            This tool uses AI to analyze social media creators for brand partnership opportunities.
 
             **Quick Start:**
             1. Add your Gemini API key in System Setup
-            2. Define CUJs (test scenarios) or generate with AI
-            3. Upload session recording videos
-            4. Run analysis to evaluate each session
+            2. Create a brief defining your campaign goals
+            3. Add creators with their social media URLs
+            4. Run analysis to evaluate brand fit
 
-            💡 Follow the Workflow Progress tracker in the sidebar →
+            💡 Check the System Status in the sidebar for next steps →
             """)
         st.session_state.welcome_shown = True
-
-def render_progress_stepper():
-    """Render workflow progress stepper in sidebar"""
-    has_api_key = bool(st.session_state.api_key)
-    has_cujs = not st.session_state.cujs.empty
-    valid_videos = st.session_state.videos[
-        st.session_state.videos.get('file_path', pd.Series(dtype='object')).notna() &
-        (st.session_state.videos.get('status', pd.Series(dtype='str')).str.lower() == 'ready')
-    ]
-    has_videos = not valid_videos.empty
-    has_results = bool(st.session_state.results)
-
-    st.sidebar.markdown("### Workflow Progress")
-
-    steps = [
-        ("Setup", has_api_key, "Configure API key & model"),
-        ("CUJs", has_cujs, "Define test scenarios"),
-        ("Videos", has_videos, "Upload recordings"),
-        ("Analyze", has_results, "Run AI analysis")
-    ]
-
-    for i, (label, is_complete, description) in enumerate(steps, 1):
-        if is_complete:
-            st.sidebar.success(f"**{i}. ✓ {label}**")
-        else:
-            st.sidebar.info(f"**{i}. ○ {label}**")
-        st.sidebar.caption(f"   {description}")
-
-    st.sidebar.markdown("---")
 
 def call_gemini(api_key, model_name, prompt, system_instruction, response_mime_type="application/json"):
     """Legacy function for text-only Gemini calls (CUJ generation, reports, etc.)"""
@@ -272,9 +190,6 @@ st.sidebar.markdown("---")
 # Show user info in sidebar
 auth.show_user_info_sidebar()
 
-# Workflow Progress Stepper
-render_progress_stepper()
-
 # Enhanced Status Indicators
 st.sidebar.markdown("### System Status")
 
@@ -285,24 +200,21 @@ else:
     st.sidebar.error("🔑 API Key: Not Set")
     st.sidebar.caption("   → Go to System Setup tab")
 
-# CUJ status
-cuj_count = len(st.session_state.cujs)
-if cuj_count > 0:
-    st.sidebar.success(f"📋 CUJs: {cuj_count} defined")
+# Brief status
+briefs_df = db.get_briefs(user_id)
+if len(briefs_df) > 0:
+    st.sidebar.success(f"📄 Briefs: {len(briefs_df)} created")
 else:
-    st.sidebar.warning("📋 CUJs: None defined")
-    st.sidebar.caption("   → Go to Define CUJs tab")
+    st.sidebar.warning("📄 Briefs: None created")
+    st.sidebar.caption("   → Go to Briefs tab")
 
-# Video status
-valid_video_count = len(st.session_state.videos[
-    st.session_state.videos.get('file_path', pd.Series(dtype='object')).notna() &
-    (st.session_state.videos.get('status', pd.Series(dtype='str')).str.lower() == 'ready')
-])
-if valid_video_count > 0:
-    st.sidebar.success(f"📹 Videos: {valid_video_count} ready")
+# Creator status
+creators_df = db.get_creators(user_id)
+if len(creators_df) > 0:
+    st.sidebar.success(f"👥 Creators: {len(creators_df)} added")
 else:
-    st.sidebar.warning("📹 Videos: None uploaded")
-    st.sidebar.caption("   → Go to Upload Videos tab")
+    st.sidebar.warning("👥 Creators: None added")
+    st.sidebar.caption("   → Go to Creators tab")
 
 # Drive status
 if DRIVE_AVAILABLE:
@@ -326,14 +238,14 @@ with st.sidebar.expander("⌨️ Shortcuts & Tips"):
     - Use `Esc` to close dialogs
 
     **Quick Tips:**
-    - Check Workflow Progress above to see next steps
+    - Check System Status above to see next steps
     - Green status = ready to proceed
-    - Cost Estimator in Upload Videos tab
-    - Low confidence results auto-expand for review
+    - Analysis cost estimates shown before running
+    - Multi-platform support (YouTube, Instagram, TikTok, Twitch)
 
     **Getting Help:**
-    - Hover over (?) icons for field help
     - Check empty states for guidance
+    - View Home tab for quick start guide
     - Contact support if stuck
     """)
 
@@ -354,79 +266,129 @@ tab_home, tab_setup, tab_briefs, tab_creators, tab_analysis, tab_reports = st.ta
 # --- TAB: HOME/OVERVIEW ---
 
 with tab_home:
-    st.header("Welcome to BrandSafe Talent Analysis")
+    st.title("Welcome to BrandSafe")
+    st.caption("AI-Powered Creator Analysis for Brand Partnerships")
 
-    # Quick stats overview
+    st.markdown("")
+
+    # Quick stats overview with better styling
     col1, col2, col3, col4 = st.columns(4)
+    briefs_df = db.get_briefs(user_id)
+    creators_df = db.get_creators(user_id)
+
+    # Get total number of creator reports
+    all_reports = []
+    if not briefs_df.empty:
+        for _, brief in briefs_df.iterrows():
+            reports = db.get_reports_for_brief(brief['id'])
+            all_reports.extend(reports.to_dict('records') if not reports.empty else [])
+
+    stats_home = db.get_statistics(user_id)
+
     with col1:
-        briefs_df = db.get_briefs(user_id)
         st.metric("📄 Briefs", len(briefs_df))
     with col2:
-        creators_df = db.get_creators(user_id)
         st.metric("👥 Creators", len(creators_df))
     with col3:
-        # Get total number of creator reports
-        all_reports = []
-        if not briefs_df.empty:
-            for _, brief in briefs_df.iterrows():
-                reports = db.get_reports_for_brief(brief['id'])
-                all_reports.extend(reports.to_dict('records') if not reports.empty else [])
         st.metric("📊 Reports", len(all_reports))
     with col4:
-        stats_home = db.get_statistics(user_id)
-        st.metric("💰 Total Cost", format_cost(stats_home['total_cost']))
+        st.metric("💰 Cost", format_cost(stats_home['total_cost']))
 
     st.markdown("---")
 
-    # Two-column layout for overview
-    col_left, col_right = st.columns([1, 1])
+    # System readiness check - prominent at top
+    if not st.session_state.api_key or len(briefs_df) == 0 or len(creators_df) == 0:
+        st.markdown("### 🚦 Getting Started")
+        col_check1, col_check2, col_check3 = st.columns(3)
 
-    with col_left:
-        st.markdown("### 🚀 Quick Start Guide")
-        st.markdown("""
-        **1. System Setup**
-        - Add your Gemini API key
-        - Optional: Add YouTube API keys for multi-platform analysis
+        with col_check1:
+            if st.session_state.api_key:
+                st.success("✅ **API Key**")
+                st.caption("Ready to analyze")
+            else:
+                st.error("❌ **API Key**")
+                st.caption("→ Go to System Setup")
 
-        **2. Create Brief**
-        - Define campaign goals and brand context
-        - Set target audience and values
-        - Create the framework for talent evaluation
+        with col_check2:
+            if len(briefs_df) > 0:
+                st.success(f"✅ **{len(briefs_df)} Brief(s)**")
+                st.caption("Campaign defined")
+            else:
+                st.warning("⚠️ **No Briefs**")
+                st.caption("→ Go to Briefs tab")
 
-        **3. Add Creators**
-        - Input social media URLs (YouTube, Instagram, TikTok, Twitch)
-        - Auto-detect platforms and fetch profile stats
-        - Add multiple accounts per creator
-
-        **4. Run Analysis**
-        - Choose analysis depth (Quick/Standard/Deep)
-        - Configure time range for content analysis
-        - Review brand fit scores and recommendations
-
-        **5. View Reports**
-        - Export professional reports (Markdown/HTML/PDF)
-        - Review platform statistics and demographics
-        - Share insights with stakeholders
-        """)
+        with col_check3:
+            if len(creators_df) > 0:
+                st.success(f"✅ **{len(creators_df)} Creator(s)**")
+                st.caption("Ready to analyze")
+            else:
+                st.warning("⚠️ **No Creators**")
+                st.caption("→ Go to Creators tab")
 
         st.markdown("---")
 
-        # System readiness check
-        st.markdown("### ✅ System Readiness")
-        if st.session_state.api_key:
-            st.success("🔑 API Key configured")
-        else:
-            st.error("🔑 API Key missing - Go to System Setup")
+    # Two-column layout for overview
+    col_left, col_right = st.columns([1.2, 1])
 
-        if len(briefs_df) > 0:
-            st.success(f"📄 {len(briefs_df)} Brief(s) created")
-        else:
-            st.warning("📄 No Briefs - Go to Briefs tab")
+    with col_left:
+        st.markdown("### 🚀 Quick Start Guide")
 
-        if len(creators_df) > 0:
-            st.success(f"👥 {len(creators_df)} Creator(s) added")
-        else:
-            st.warning("👥 No Creators - Go to Creators tab")
+        st.markdown("**1. System Setup**")
+        st.markdown("Add your Gemini API key and optional YouTube API keys for multi-platform analysis")
+        st.markdown("")
+
+        st.markdown("**2. Create Brief**")
+        st.markdown("Define campaign goals, brand context, and target audience to evaluate creator fit")
+        st.markdown("")
+
+        st.markdown("**3. Add Creators**")
+        st.markdown("Input social media URLs (YouTube, Instagram, TikTok, Twitch) and link to brief")
+        st.markdown("")
+
+        st.markdown("**4. Run Analysis**")
+        st.markdown("Choose analysis depth (Quick/Standard/Deep) and review brand fit scores")
+        st.markdown("")
+
+        st.markdown("**5. View Reports**")
+        st.markdown("Export professional reports in Markdown, HTML, PDF, or Excel formats")
+
+        st.markdown("---")
+
+        st.markdown("### ✨ Key Features")
+
+        feature_col1, feature_col2 = st.columns(2)
+
+        with feature_col1:
+            st.markdown("**🌐 Multi-Platform**")
+            st.caption("YouTube, Instagram, TikTok, Twitch")
+            st.markdown("")
+
+            st.markdown("**📊 Brand Fit Scoring**")
+            st.caption("AI-powered 1-5 scale alignment")
+            st.markdown("")
+
+            st.markdown("**⚡ Flexible Tiers**")
+            st.caption("Quick, Standard, Deep analysis")
+            st.markdown("")
+
+            st.markdown("**📄 Pro Reports**")
+            st.caption("MD, HTML, PDF, Excel export")
+
+        with feature_col2:
+            st.markdown("**💰 Cost Optimization**")
+            st.caption("API key rotation & caching")
+            st.markdown("")
+
+            st.markdown("**🔍 Account Discovery**")
+            st.caption("Auto-detect alternate platforms")
+            st.markdown("")
+
+            st.markdown("**📈 Content Analysis**")
+            st.caption("Themes, sentiment, engagement")
+            st.markdown("")
+
+            st.markdown("**👥 Demographics**")
+            st.caption("Audience insights & stats")
 
     with col_right:
         st.markdown("### 📊 Recent Activity")
@@ -434,45 +396,73 @@ with tab_home:
         # Show recent briefs and reports
         if not briefs_df.empty:
             recent_briefs = briefs_df.sort_values('created_at', ascending=False).head(3)
+
             for _, brief in recent_briefs.iterrows():
-                st.caption(f"📄 **{brief['name']}**")
-                # Get creators for this brief
-                brief_creators = db.get_creators_for_brief(brief['id'])
-                if not brief_creators.empty:
-                    st.caption(f"   ↳ {len(brief_creators)} creator(s) linked")
-                st.caption(f"   ↳ Created: {brief['created_at'][:10]}")
-                st.markdown("")
+                with st.container():
+                    st.markdown(f"**📄 {brief['name']}**")
+
+                    # Get creators for this brief
+                    brief_creators = db.get_creators_for_brief(brief['id'])
+                    if not brief_creators.empty:
+                        st.caption(f"↳ {len(brief_creators)} creator(s) linked")
+
+                    st.caption(f"↳ Created {brief['created_at'][:10]}")
+                    st.markdown("")
         else:
-            st.info("No briefs yet. Create your first brief!")
-
-        st.markdown("---")
-
-        # Key features highlight
-        st.markdown("### ✨ Key Features")
-        st.markdown("""
-        - **Multi-Platform Analysis** - YouTube, Instagram, TikTok, Twitch
-        - **Brand Fit Scoring** - AI-powered brand safety & alignment (1-10 scale)
-        - **Flexible Analysis Tiers** - Quick (free), Standard, Deep analysis
-        - **Professional Reports** - Export to Markdown, HTML, plain text
-        - **Cost Optimization** - API key rotation, smart caching
-        - **Account Discovery** - Auto-detect creator's alternate platforms
-        - **Content Analysis** - Themes, sentiment, engagement quality
-        """)
+            st.info("💡 **No activity yet**\n\nCreate your first brief to get started!")
 
         if len(all_reports) > 0:
             st.markdown("---")
             st.markdown("### 📈 Analysis Summary")
+
             # Show average brand fit score across all reports
             avg_score = sum(r.get('overall_score', 0) for r in all_reports) / len(all_reports)
-            st.caption(f"• **Average Brand Fit Score**: {avg_score:.1f}/10")
-            st.caption(f"• **Total Creators Analyzed**: {len(all_reports)}")
-            st.caption(f"• **Total Cost**: {format_cost(stats_home['total_cost'])}")
+
+            # Score indicator
+            if avg_score >= 4.0:
+                score_color = "🟢"
+                score_label = "Strong"
+            elif avg_score >= 3.0:
+                score_color = "🟡"
+                score_label = "Moderate"
+            else:
+                score_color = "🔴"
+                score_label = "Mixed"
+
+            st.markdown(f"**{score_color} Average Brand Fit:** {avg_score:.1f}/5.0 ({score_label})")
+            st.caption(f"Based on {len(all_reports)} creator analysis")
+            st.caption(f"Total investment: {format_cost(stats_home['total_cost'])}")
 
 # --- TAB: SYSTEM SETUP ---
 
 with tab_setup:
     st.header("System Setup")
-    
+
+    # System Status at the top
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        if st.session_state.api_key:
+            st.success("🔑 API Key")
+        else:
+            st.error("🔑 API Key Missing")
+    with col2:
+        briefs_df_status = db.get_briefs(user_id)
+        if len(briefs_df_status) > 0:
+            st.success(f"📄 {len(briefs_df_status)} Briefs")
+        else:
+            st.warning("📄 No Briefs")
+    with col3:
+        creators_df_status = db.get_creators(user_id)
+        if len(creators_df_status) > 0:
+            st.success(f"👥 {len(creators_df_status)} Creators")
+        else:
+            st.warning("👥 No Creators")
+    with col4:
+        stats_setup = db.get_statistics(user_id)
+        st.metric("💰 Cost", format_cost(stats_setup['total_cost']))
+
+    st.markdown("---")
+
     with st.expander("Gemini Configuration", expanded=True):
         new_api_key = st.text_input("Gemini API Key", value=st.session_state.api_key, type="password")
 
@@ -593,6 +583,216 @@ with tab_setup:
                             st.error("Failed to delete key")
         else:
             st.info("No YouTube API keys configured. Add one above to analyze YouTube creators.")
+
+    with st.expander("Analysis Configuration", expanded=False):
+        st.markdown("### Content Analysis Prompt")
+        st.caption("This prompt is sent to Gemini along with creator posts to evaluate brand safety, content themes, and partnership fit.")
+
+        # Get current custom prompt or use default
+        current_custom_prompt = db.get_setting(user_id, "custom_analysis_prompt", "")
+        using_custom = bool(current_custom_prompt)
+
+        if using_custom:
+            display_prompt = current_custom_prompt
+            st.info("✓ Using custom prompt")
+        else:
+            display_prompt = CREATOR_ANALYSIS_SYSTEM_PROMPT
+            st.info("Using default prompt")
+
+        # Prompt editor
+        edited_prompt = st.text_area(
+            "Analysis Prompt",
+            value=display_prompt,
+            height=300,
+            help="This prompt defines how Gemini analyzes creator content. Customize it to match your evaluation criteria."
+        )
+
+        col1, col2, col3 = st.columns([1, 1, 2])
+        with col1:
+            if st.button("💾 Save Custom Prompt", type="primary"):
+                if edited_prompt and edited_prompt != CREATOR_ANALYSIS_SYSTEM_PROMPT:
+                    db.save_setting(user_id, "custom_analysis_prompt", edited_prompt)
+                    st.success("✅ Custom prompt saved")
+                    st.rerun()
+                elif edited_prompt == CREATOR_ANALYSIS_SYSTEM_PROMPT:
+                    # If it matches default, clear custom setting
+                    db.save_setting(user_id, "custom_analysis_prompt", "")
+                    st.info("Prompt matches default - cleared custom setting")
+                    st.rerun()
+                else:
+                    st.warning("Prompt cannot be empty")
+
+        with col2:
+            if using_custom:
+                if st.button("↩️ Reset to Default"):
+                    db.save_setting(user_id, "custom_analysis_prompt", "")
+                    st.success("✅ Reset to default prompt")
+                    st.rerun()
+
+        with col3:
+            with st.popover("ℹ️ How Prompts Work"):
+                st.markdown("""
+                **How Analysis Works:**
+
+                1. **Data Collection**: System fetches recent posts from creator's social accounts
+                2. **Prompt Construction**: Up to 20 posts are selected and formatted with:
+                   - Platform name
+                   - Post caption/title (first 500 chars)
+                   - Engagement metrics (likes, views)
+                3. **AI Analysis**: The prompt + brand context + posts are sent to Gemini
+                4. **Response**: Gemini returns structured JSON with themes, scores, and recommendations
+
+                **Tips for Custom Prompts:**
+                - Keep the JSON output format intact for proper parsing
+                - Focus on your specific brand safety criteria
+                - Add custom scoring dimensions if needed
+                - Include examples of red flags specific to your brand
+                """)
+
+        st.markdown("---")
+        st.markdown("### Analysis Limits")
+        st.caption("Control how much content is analyzed per creator to balance quality and cost.")
+
+        # Get current limits or use defaults
+        posts_for_analysis = int(db.get_setting(user_id, "posts_for_gemini_analysis", "20"))
+
+        col1, col2 = st.columns(2)
+        with col1:
+            new_posts_limit = st.number_input(
+                "Posts Sent to Gemini for Analysis",
+                min_value=5,
+                max_value=100,
+                value=posts_for_analysis,
+                step=5,
+                help="Number of most engaging posts to analyze with Gemini. More posts = better insights but higher cost."
+            )
+
+            if new_posts_limit != posts_for_analysis:
+                db.save_setting(user_id, "posts_for_gemini_analysis", str(new_posts_limit))
+                st.success(f"✅ Updated to {new_posts_limit} posts")
+                st.rerun()
+
+        with col2:
+            st.metric("Current Setting", f"{posts_for_analysis} posts")
+
+            # Estimate token/cost impact
+            estimated_tokens = posts_for_analysis * 600  # ~600 tokens per post (caption + metadata)
+            estimated_cost = (estimated_tokens / 1_000_000) * 1.25  # Using Gemini 2.5 Pro input cost
+
+            st.caption(f"≈ {estimated_tokens:,} tokens")
+            st.caption(f"≈ ${estimated_cost:.3f} per creator")
+
+        st.markdown("**Analysis Tier Configurations:**")
+        st.caption("Configure max posts fetched from platforms (before selection for Gemini analysis)")
+
+        # Get tier configurations
+        tier_configs = {
+            "standard": {
+                "name": "Standard Analysis",
+                "current_max": int(db.get_setting(user_id, "tier_standard_max_posts", "10")),
+                "default": 10
+            },
+            "deep": {
+                "name": "Deep Dive",
+                "current_max": int(db.get_setting(user_id, "tier_deep_max_posts", "50")),
+                "default": 50
+            },
+            "deep_research": {
+                "name": "Deep Research",
+                "current_max": int(db.get_setting(user_id, "tier_deep_research_max_posts", "50")),
+                "default": 50
+            }
+        }
+
+        for tier_key, tier_info in tier_configs.items():
+            col1, col2, col3 = st.columns([2, 2, 1])
+
+            with col1:
+                st.text(tier_info["name"])
+
+            with col2:
+                new_max = st.number_input(
+                    f"Max posts",
+                    min_value=5,
+                    max_value=200,
+                    value=tier_info["current_max"],
+                    step=5,
+                    key=f"tier_{tier_key}_max",
+                    label_visibility="collapsed"
+                )
+
+                if new_max != tier_info["current_max"]:
+                    db.save_setting(user_id, f"tier_{tier_key}_max_posts", str(new_max))
+                    st.rerun()
+
+            with col3:
+                if tier_info["current_max"] != tier_info["default"]:
+                    if st.button("Reset", key=f"reset_{tier_key}"):
+                        db.save_setting(user_id, f"tier_{tier_key}_max_posts", str(tier_info["default"]))
+                        st.rerun()
+
+        st.info("""
+        **Note**: The system fetches up to `Max posts` from each platform, then selects the top posts
+        by engagement for Gemini analysis (based on "Posts Sent to Gemini" setting above).
+        """)
+
+    with st.expander("Instagram Configuration (Optional)", expanded=False):
+        st.markdown("Add Instagram login credentials to improve scraping reliability and bypass rate limits.")
+        st.warning("⚠️ **Privacy Notice**: Credentials are stored locally and only used for Instagram API access. Use a dedicated account if concerned.")
+
+        # Get current Instagram credentials
+        instagram_username = db.get_setting(user_id, "instagram_username", "")
+        instagram_password_set = bool(db.get_setting(user_id, "instagram_password", ""))
+
+        # Form to update credentials
+        with st.form("instagram_credentials_form"):
+            col1, col2 = st.columns(2)
+            with col1:
+                new_ig_username = st.text_input(
+                    "Instagram Username",
+                    value=instagram_username,
+                    placeholder="your_instagram_username",
+                    help="Your Instagram username (without @)"
+                )
+            with col2:
+                new_ig_password = st.text_input(
+                    "Instagram Password",
+                    type="password",
+                    placeholder="••••••••" if instagram_password_set else "Enter password",
+                    help="Your Instagram password"
+                )
+
+            col1, col2 = st.columns([1, 1])
+            with col1:
+                if st.form_submit_button("💾 Save Credentials", type="primary"):
+                    if new_ig_username and new_ig_password:
+                        db.save_setting(user_id, "instagram_username", new_ig_username)
+                        db.save_setting(user_id, "instagram_password", new_ig_password)
+                        st.success("✅ Instagram credentials saved")
+                        st.rerun()
+                    elif new_ig_username:
+                        # Save username only, keep existing password
+                        db.save_setting(user_id, "instagram_username", new_ig_username)
+                        st.success("✅ Username saved")
+                        st.rerun()
+                    else:
+                        st.warning("Please provide at least a username")
+
+            with col2:
+                if instagram_username or instagram_password_set:
+                    if st.form_submit_button("🗑️ Clear Credentials"):
+                        db.save_setting(user_id, "instagram_username", "")
+                        db.save_setting(user_id, "instagram_password", "")
+                        st.success("✅ Credentials cleared")
+                        st.rerun()
+
+        # Status display
+        if instagram_username:
+            st.info(f"✓ Logged in as @{instagram_username}")
+            st.caption("Instagram scraping will use authenticated access for better reliability")
+        else:
+            st.info("ℹ️ No credentials configured - Instagram will use anonymous access (limited)")
+            st.caption("Anonymous access may result in rate limits or 403 errors. Consider adding credentials.")
 
     # Google Drive OAuth
     if DRIVE_AVAILABLE:
@@ -752,47 +952,86 @@ with tab_creators:
     with st.expander("➕ Add Creator", expanded=False):
         with st.form("add_creator_form"):
             creator_name = st.text_input("Creator Name*", placeholder="Jane Doe")
-            profile_url = st.text_input("Social Media URL*", placeholder="https://youtube.com/@creator")
 
-            # Auto-detect platform
-            detected_platform = None
-            detected_handle = None
-            if profile_url:
-                detected_platform = detect_platform_from_url(profile_url)
-                if detected_platform:
-                    detected_handle = extract_handle_from_url(profile_url, detected_platform)
-                    st.info(f"✓ Detected: {detected_platform.title()} - @{detected_handle}")
-                else:
-                    st.warning("Could not detect platform. Please enter a valid social media URL.")
+            st.markdown("**Social Media Accounts** (add at least one)")
+
+            # Multiple URL inputs for different platforms
+            col1, col2 = st.columns(2)
+            with col1:
+                youtube_url = st.text_input("YouTube", placeholder="https://youtube.com/@creator", key="yt_url")
+                instagram_url = st.text_input("Instagram", placeholder="https://instagram.com/creator", key="ig_url")
+            with col2:
+                tiktok_url = st.text_input("TikTok", placeholder="https://tiktok.com/@creator", key="tt_url")
+                twitch_url = st.text_input("Twitch", placeholder="https://twitch.tv/creator", key="tw_url")
 
             notes = st.text_area("Notes (optional)", placeholder="Additional information about this creator...")
 
             if st.form_submit_button("Add Creator", type="primary"):
-                if not creator_name or not profile_url:
-                    st.error("Please fill in Creator Name and Social Media URL")
-                elif not detected_platform:
-                    st.error("Invalid social media URL. Supported platforms: YouTube, Instagram, TikTok, Twitch")
+                # Collect all provided URLs
+                platform_urls = {}
+
+                if youtube_url:
+                    platform = detect_platform_from_url(youtube_url)
+                    if platform == 'youtube':
+                        platform_urls['youtube'] = {
+                            'url': youtube_url,
+                            'handle': extract_handle_from_url(youtube_url, 'youtube')
+                        }
+
+                if instagram_url:
+                    platform = detect_platform_from_url(instagram_url)
+                    if platform == 'instagram':
+                        platform_urls['instagram'] = {
+                            'url': instagram_url,
+                            'handle': extract_handle_from_url(instagram_url, 'instagram')
+                        }
+
+                if tiktok_url:
+                    platform = detect_platform_from_url(tiktok_url)
+                    if platform == 'tiktok':
+                        platform_urls['tiktok'] = {
+                            'url': tiktok_url,
+                            'handle': extract_handle_from_url(tiktok_url, 'tiktok')
+                        }
+
+                if twitch_url:
+                    platform = detect_platform_from_url(twitch_url)
+                    if platform == 'twitch':
+                        platform_urls['twitch'] = {
+                            'url': twitch_url,
+                            'handle': extract_handle_from_url(twitch_url, 'twitch')
+                        }
+
+                # Validation
+                if not creator_name:
+                    st.error("Please enter a Creator Name")
+                elif len(platform_urls) == 0:
+                    st.error("Please add at least one social media URL")
                 elif auth.is_demo_mode() and len(creators_df) >= 3:
                     st.error("Demo mode limit: Maximum 3 creators. Create an account for unlimited access!")
                 else:
+                    # Determine primary platform (first one added)
+                    primary_platform = list(platform_urls.keys())[0]
+
                     # Save creator
                     creator_id = db.save_creator(
                         user_id=user_id,
                         name=creator_name,
-                        primary_platform=detected_platform,
+                        primary_platform=primary_platform,
                         notes=notes
                     )
 
-                    # Save social account
-                    db.save_social_account(
-                        creator_id=creator_id,
-                        platform=detected_platform,
-                        profile_url=profile_url,
-                        handle=detected_handle,
-                        discovery_method="manual"
-                    )
+                    # Save all social accounts
+                    for platform, data in platform_urls.items():
+                        db.save_social_account(
+                            creator_id=creator_id,
+                            platform=platform,
+                            profile_url=data['url'],
+                            handle=data['handle'],
+                            discovery_method="manual"
+                        )
 
-                    st.success(f"✅ Creator added: {creator_name}")
+                    st.success(f"✅ Creator added: {creator_name} ({len(platform_urls)} platform(s))")
                     time.sleep(1)
                     st.rerun()
 
@@ -820,6 +1059,55 @@ with tab_creators:
                             st.caption(f"  • {account['platform'].title()}: [{account.get('handle', 'N/A')}]({account['profile_url']})")
                             if account.get('last_fetched_at'):
                                 st.caption(f"    Last fetched: {account['last_fetched_at'][:10]}")
+
+                    # Add additional social account
+                    with st.expander("➕ Add Another Social Account"):
+                        with st.form(f"add_social_account_{creator['id']}"):
+                            new_profile_url = st.text_input(
+                                "Social Media URL",
+                                placeholder="https://instagram.com/creator or https://tiktok.com/@creator",
+                                key=f"new_url_{creator['id']}"
+                            )
+
+                            # Auto-detect platform
+                            new_detected_platform = None
+                            new_detected_handle = None
+                            if new_profile_url:
+                                new_detected_platform = detect_platform_from_url(new_profile_url)
+                                if new_detected_platform:
+                                    new_detected_handle = extract_handle_from_url(new_profile_url, new_detected_platform)
+
+                                    # Check if this platform already exists for this creator
+                                    existing_platforms = accounts_df['platform'].tolist() if not accounts_df.empty else []
+                                    if new_detected_platform in existing_platforms:
+                                        st.warning(f"⚠️ {new_detected_platform.title()} account already exists for this creator")
+                                    else:
+                                        st.info(f"✓ Detected: {new_detected_platform.title()} - @{new_detected_handle}")
+                                else:
+                                    st.warning("Could not detect platform. Supported: YouTube, Instagram, TikTok, Twitch")
+
+                            if st.form_submit_button("Add Social Account", type="primary"):
+                                if not new_profile_url:
+                                    st.error("Please enter a social media URL")
+                                elif not new_detected_platform:
+                                    st.error("Invalid URL. Supported platforms: YouTube, Instagram, TikTok, Twitch")
+                                else:
+                                    # Check for duplicates
+                                    existing_platforms = accounts_df['platform'].tolist() if not accounts_df.empty else []
+                                    if new_detected_platform in existing_platforms:
+                                        st.error(f"{new_detected_platform.title()} account already exists for this creator")
+                                    else:
+                                        # Save new social account
+                                        db.save_social_account(
+                                            creator_id=creator['id'],
+                                            platform=new_detected_platform,
+                                            profile_url=new_profile_url,
+                                            handle=new_detected_handle,
+                                            discovery_method="manual"
+                                        )
+                                        st.success(f"✅ Added {new_detected_platform.title()} account!")
+                                        time.sleep(1)
+                                        st.rerun()
 
                     # Link to briefs
                     st.markdown("**Link to Brief:**")
@@ -908,141 +1196,271 @@ with tab_analysis:
                 Go to the Creators tab and link creators to this brief first.
                 """)
             else:
-                st.success(f"✓ {len(creators_in_brief)} creator(s) ready to analyze")
+                # Creator Selection Section
+                st.markdown("### Select Creators to Analyze")
 
-                # Analysis configuration
-                st.markdown("### Analysis Configuration")
+                # Initialize session state for selected creators if not exists
+                if 'selected_creators_for_analysis' not in st.session_state:
+                    st.session_state.selected_creators_for_analysis = set(creators_in_brief['id'].tolist())
 
-                col_config1, col_config2 = st.columns(2)
-
-                with col_config1:
-                    time_range = st.slider(
-                        "Time Range (days)",
-                        min_value=30,
-                        max_value=730,
-                        value=DEFAULT_TIME_RANGE_DAYS,
-                        help="How far back to analyze posts"
+                # Search/Filter Bar
+                col_search, col_clear = st.columns([4, 1])
+                with col_search:
+                    search_query = st.text_input(
+                        "🔍 Search creators",
+                        placeholder="Filter by name or platform...",
+                        key="creator_search_analysis",
+                        label_visibility="collapsed"
                     )
-
-                with col_config2:
-                    analysis_depth = st.selectbox(
-                        "Analysis Depth",
-                        list(ANALYSIS_TIERS.keys()),
-                        format_func=lambda x: f"{ANALYSIS_TIERS[x]['name']} - {ANALYSIS_TIERS[x]['description']}",
-                        help="Choose analysis depth"
-                    )
-
-                # Show tier details
-                tier_info = ANALYSIS_TIERS[analysis_depth]
-                st.caption(f"**{tier_info['name']}**: {tier_info['description']}")
-
-                # Cost estimate
-                estimated_cost = len(creators_in_brief) * tier_info['estimated_cost_per_creator']
-                st.info(f"💰 **Estimated Cost**: {format_cost(estimated_cost)} ({len(creators_in_brief)} creator(s) × {format_cost(tier_info['estimated_cost_per_creator'])} each)")
-
-                st.markdown("---")
-
-                # Creators preview
-                with st.expander(f"👥 Creators to Analyze ({len(creators_in_brief)})", expanded=True):
-                    for _, creator in creators_in_brief.iterrows():
-                        accounts = db.get_social_accounts(creator['id'])
-                        platforms = ', '.join(accounts['platform'].str.title().tolist()) if not accounts.empty else 'N/A'
-                        st.caption(f"• **{creator['name']}** ({platforms})")
-
-                st.markdown("---")
-
-                # Run analysis button
-                if st.button("🚀 Run Analysis", type="primary", use_container_width=True):
-                    if not st.session_state.api_key:
-                        st.error("⚠️ Gemini API Key required. Please configure in System Setup tab.")
-                        st.stop()
-
-                    # Check if we have YouTube creators and no API keys
-                    has_youtube = False
-                    for _, creator in creators_in_brief.iterrows():
-                        accounts = db.get_social_accounts(creator['id'])
-                        if not accounts.empty and 'youtube' in accounts['platform'].str.lower().values:
-                            has_youtube = True
-                            break
-
-                    youtube_keys = db.get_youtube_api_keys(user_id)
-
-                    if has_youtube and not youtube_keys:
-                        st.error("⚠️ YouTube API keys required to analyze YouTube creators. Please add them in System Setup tab.")
-                        st.stop()
-
-                    # Initialize analyzer
-                    try:
-                        analyzer = CreatorAnalyzer(
-                            gemini_api_key=st.session_state.api_key,
-                            youtube_api_keys=youtube_keys
-                        )
-
-                        # Progress tracking
-                        progress_bar = st.progress(0)
-                        status_text = st.empty()
-                        results_container = st.container()
-
-                        total_creators = len(creators_in_brief)
-                        successful_analyses = 0
-                        failed_analyses = 0
-
-                        for idx, creator in creators_in_brief.iterrows():
-                            try:
-                                status_text.text(f"Analyzing {creator['name']} ({idx + 1}/{total_creators})...")
-
-                                # Progress callback
-                                def update_progress(message, progress_fraction):
-                                    overall_progress = (idx + progress_fraction) / total_creators
-                                    progress_bar.progress(overall_progress)
-                                    status_text.text(f"{message} - {creator['name']}")
-
-                                # Run analysis
-                                result = analyzer.analyze_creator(
-                                    creator_id=creator['id'],
-                                    brief_id=brief_id,
-                                    time_range_days=time_range,
-                                    analysis_depth=analysis_depth,
-                                    progress_callback=update_progress
-                                )
-
-                                if result['success']:
-                                    successful_analyses += 1
-                                    with results_container:
-                                        st.success(f"✅ {creator['name']}: Analysis complete (Score: {result['overall_metrics'].get('brand_fit_score', 'N/A')}/10)")
-                                else:
-                                    failed_analyses += 1
-                                    with results_container:
-                                        st.error(f"❌ {creator['name']}: Analysis failed")
-
-                            except CreatorAnalysisError as e:
-                                failed_analyses += 1
-                                with results_container:
-                                    st.error(f"❌ {creator['name']}: {str(e)}")
-                            except Exception as e:
-                                failed_analyses += 1
-                                with results_container:
-                                    st.error(f"❌ {creator['name']}: Unexpected error - {str(e)}")
-
-                            # Update progress
-                            progress_bar.progress((idx + 1) / total_creators)
-
-                        # Final summary
-                        progress_bar.progress(1.0)
-                        status_text.text("✅ Analysis complete!")
-
-                        st.markdown("---")
-                        if failed_analyses == 0:
-                            st.success(f"🎉 All {successful_analyses} analyses completed successfully!")
-                        else:
-                            st.warning(f"⚠️ Completed: {successful_analyses} succeeded, {failed_analyses} failed")
-
-                        st.info("💡 View detailed reports in the Reports tab")
-                        time.sleep(2)
+                with col_clear:
+                    if search_query and st.button("✕ Clear", use_container_width=True, key="clear_search_analysis"):
+                        st.session_state.creator_search_analysis = ""
                         st.rerun()
 
-                    except Exception as e:
-                        st.error(f"Failed to initialize analyzer: {str(e)}")
+                # Filter creators based on search query
+                if search_query:
+                    search_lower = search_query.lower()
+                    filtered_creators = []
+
+                    for _, creator in creators_in_brief.iterrows():
+                        # Search in creator name
+                        if search_lower in creator['name'].lower():
+                            filtered_creators.append(creator)
+                            continue
+
+                        # Search in platforms
+                        accounts = db.get_social_accounts(int(creator['id']))
+                        platforms_str = ' '.join(accounts['platform'].str.lower().tolist()) if not accounts.empty else ''
+                        if search_lower in platforms_str:
+                            filtered_creators.append(creator)
+                            continue
+
+                    # Convert back to DataFrame
+                    import pandas as pd
+                    if filtered_creators:
+                        creators_display = pd.DataFrame(filtered_creators)
+                    else:
+                        creators_display = pd.DataFrame()
+
+                    # Show filter status
+                    if creators_display.empty:
+                        st.warning(f"🔍 No creators found matching '{search_query}'")
+                    else:
+                        st.info(f"🔍 Showing {len(creators_display)} of {len(creators_in_brief)} creators")
+                else:
+                    creators_display = creators_in_brief
+
+                # Selection controls
+                col_select1, col_select2, col_select3 = st.columns([1, 1, 2])
+
+                with col_select1:
+                    if st.button("✓ Select All", use_container_width=True, help="Select all creators (including filtered)"):
+                        st.session_state.selected_creators_for_analysis = set(creators_in_brief['id'].tolist())
+                        st.rerun()
+
+                with col_select2:
+                    if st.button("✗ Deselect All", use_container_width=True, help="Deselect all creators"):
+                        st.session_state.selected_creators_for_analysis = set()
+                        st.rerun()
+
+                with col_select3:
+                    selected_count = len(st.session_state.selected_creators_for_analysis)
+                    st.caption(f"**{selected_count}** of **{len(creators_in_brief)}** creator(s) selected")
+
+                st.markdown("")
+
+                # Display creators with checkboxes and brief associations
+                if creators_display.empty:
+                    st.caption("No creators to display")
+                else:
+                    for _, creator in creators_display.iterrows():
+                        creator_id = int(creator['id'])
+
+                        # Get all briefs this creator is linked to
+                        conn = db._get_connection()
+                        cursor = conn.cursor()
+                        cursor.execute("""
+                            SELECT b.name
+                            FROM briefs b
+                            JOIN brief_creators bc ON b.id = bc.brief_id
+                            WHERE bc.creator_id = ? AND b.user_id = ?
+                            ORDER BY b.name
+                        """, (creator_id, user_id))
+                        brief_names = [row[0] for row in cursor.fetchall()]
+                        conn.close()
+
+                        # Get social accounts
+                        accounts = db.get_social_accounts(creator_id)
+                        platforms = ', '.join(accounts['platform'].str.title().tolist()) if not accounts.empty else 'No platforms'
+
+                        # Checkbox for selection
+                        col_check, col_info = st.columns([0.5, 9.5])
+
+                        with col_check:
+                            is_selected = creator_id in st.session_state.selected_creators_for_analysis
+                            if st.checkbox(f"Select {creator['name']}", value=is_selected, key=f"creator_select_{creator_id}", label_visibility="collapsed"):
+                                st.session_state.selected_creators_for_analysis.add(creator_id)
+                            else:
+                                st.session_state.selected_creators_for_analysis.discard(creator_id)
+
+                        with col_info:
+                            st.markdown(f"**{creator['name']}**")
+                            st.caption(f"📱 Platforms: {platforms}")
+
+                            # Show brief associations
+                            if len(brief_names) > 1:
+                                other_briefs = [b for b in brief_names if b != selected_brief_name]
+                                if other_briefs:
+                                    st.caption(f"📄 Also in: {', '.join(other_briefs)}")
+
+                st.markdown("---")
+
+                # Filter selected creators
+                selected_creator_ids = list(st.session_state.selected_creators_for_analysis)
+                creators_to_analyze = creators_in_brief[creators_in_brief['id'].isin(selected_creator_ids)]
+
+                if len(creators_to_analyze) == 0:
+                    st.warning("⚠️ No creators selected. Please select at least one creator to analyze.")
+                else:
+                    st.success(f"✓ {len(creators_to_analyze)} creator(s) ready to analyze")
+
+                    # Analysis configuration
+                    st.markdown("### Analysis Configuration")
+
+                    col_config1, col_config2 = st.columns(2)
+
+                    with col_config1:
+                        # Quarterly steps: 90, 180, 270, 365, 455, 545, 635, 730
+                        time_range_options = [90, 180, 270, 365, 455, 545, 635, 730]
+                        time_range_labels = ["3 months", "6 months", "9 months", "1 year", "15 months", "18 months", "21 months", "2 years"]
+
+                        # Find closest default value or use 6 months
+                        try:
+                            default_index = time_range_options.index(DEFAULT_TIME_RANGE_DAYS)
+                        except ValueError:
+                            # If DEFAULT_TIME_RANGE_DAYS not in list, find closest
+                            default_index = min(range(len(time_range_options)),
+                                              key=lambda i: abs(time_range_options[i] - DEFAULT_TIME_RANGE_DAYS))
+
+                        time_range_selection = st.select_slider(
+                            "Time Range",
+                            options=time_range_options,
+                            value=time_range_options[default_index],
+                            format_func=lambda x: time_range_labels[time_range_options.index(x)],
+                            help="How far back to analyze posts"
+                        )
+                        time_range = time_range_selection
+
+                    with col_config2:
+                        analysis_depth = st.selectbox(
+                            "Analysis Depth",
+                            list(ANALYSIS_TIERS.keys()),
+                            format_func=lambda x: f"{ANALYSIS_TIERS[x]['name']} - {ANALYSIS_TIERS[x]['description']}",
+                            help="Choose analysis depth"
+                        )
+
+                    # Show tier details
+                    tier_info = ANALYSIS_TIERS[analysis_depth]
+                    st.caption(f"**{tier_info['name']}**: {tier_info['description']}")
+
+                    # Cost estimate
+                    estimated_cost = len(creators_to_analyze) * tier_info['estimated_cost_per_creator']
+                    st.info(f"💰 **Estimated Cost**: {format_cost(estimated_cost)} ({len(creators_to_analyze)} creator(s) × {format_cost(tier_info['estimated_cost_per_creator'])} each)")
+
+                    st.markdown("---")
+
+                    # Run analysis button
+                    if st.button("🚀 Run Analysis", type="primary", use_container_width=True):
+                        if not st.session_state.api_key:
+                            st.error("⚠️ Gemini API Key required. Please configure in System Setup tab.")
+                            st.stop()
+
+                        # Check if we have YouTube creators and no API keys
+                        has_youtube = False
+                        for _, creator in creators_to_analyze.iterrows():
+                            accounts = db.get_social_accounts(creator['id'])
+                            if not accounts.empty and 'youtube' in accounts['platform'].str.lower().values:
+                                has_youtube = True
+                                break
+
+                        youtube_keys = db.get_youtube_api_keys(user_id)
+
+                        if has_youtube and not youtube_keys:
+                            st.error("⚠️ YouTube API keys required to analyze YouTube creators. Please add them in System Setup tab.")
+                            st.stop()
+
+                        # Initialize analyzer
+                        try:
+                            analyzer = CreatorAnalyzer(
+                                gemini_api_key=st.session_state.api_key,
+                                youtube_api_keys=youtube_keys
+                            )
+
+                            # Progress tracking
+                            progress_bar = st.progress(0)
+                            status_text = st.empty()
+                            results_container = st.container()
+
+                            total_creators = len(creators_to_analyze)
+                            successful_analyses = 0
+                            failed_analyses = 0
+
+                            for idx, (_, creator) in enumerate(creators_to_analyze.iterrows()):
+                                try:
+                                    status_text.text(f"Analyzing {creator['name']} ({idx + 1}/{total_creators})...")
+
+                                    # Progress callback
+                                    def update_progress(message, progress_fraction):
+                                        overall_progress = (idx + progress_fraction) / total_creators
+                                        progress_bar.progress(overall_progress)
+                                        status_text.text(f"{message} - {creator['name']}")
+
+                                    # Run analysis
+                                    result = analyzer.analyze_creator(
+                                        creator_id=creator['id'],
+                                        brief_id=brief_id,
+                                        time_range_days=time_range,
+                                        analysis_depth=analysis_depth,
+                                        progress_callback=update_progress
+                                    )
+
+                                    if result['success']:
+                                        successful_analyses += 1
+                                        with results_container:
+                                            st.success(f"✅ {creator['name']}: Analysis complete (Score: {result['overall_metrics'].get('brand_fit_score', 'N/A')}/5.0)")
+                                    else:
+                                        failed_analyses += 1
+                                        with results_container:
+                                            st.error(f"❌ {creator['name']}: Analysis failed")
+
+                                except CreatorAnalysisError as e:
+                                    failed_analyses += 1
+                                    with results_container:
+                                        st.error(f"❌ {creator['name']}: {str(e)}")
+                                except Exception as e:
+                                    failed_analyses += 1
+                                    with results_container:
+                                        st.error(f"❌ {creator['name']}: Unexpected error - {str(e)}")
+
+                                # Update progress
+                                progress_bar.progress((idx + 1) / total_creators)
+
+                            # Final summary
+                            progress_bar.progress(1.0)
+                            status_text.text("✅ Analysis complete!")
+
+                            st.markdown("---")
+                            if failed_analyses == 0:
+                                st.success(f"🎉 All {successful_analyses} analyses completed successfully!")
+                            else:
+                                st.warning(f"⚠️ Completed: {successful_analyses} succeeded, {failed_analyses} failed")
+
+                            st.info("💡 View detailed reports in the Reports tab")
+                            time.sleep(2)
+                            st.rerun()
+
+                        except Exception as e:
+                            st.error(f"Failed to initialize analyzer: {str(e)}")
 
 # --- TAB: REPORTS ---
 
@@ -1266,6 +1684,16 @@ with tab_reports:
                                     key=f"txt_{report_row['id']}",
                                     use_container_width=True
                                 )
+
+                            # Delete report button
+                            st.markdown("---")
+                            if st.button(f"🗑️ Delete Report", key=f"del_report_{report_row['id']}", type="secondary"):
+                                if db.delete_creator_report(report_row['id'], user_id):
+                                    st.success(f"✅ Report deleted: {report_row['creator_name']}")
+                                    time.sleep(0.5)
+                                    st.rerun()
+                                else:
+                                    st.error("Failed to delete report")
 
                         except Exception as e:
                             st.error(f"Error generating report: {str(e)}")

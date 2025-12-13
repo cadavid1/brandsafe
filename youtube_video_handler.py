@@ -53,37 +53,48 @@ def get_video_transcript(video_url: str, languages: List[str] = ['en']) -> Optio
         if not video_id:
             return None
 
-        # Try to get transcript directly (simpler approach)
-        transcript_data = None
+        # Create API instance and fetch transcript
+        api = YouTubeTranscriptApi()
+        transcript_obj = None
 
         # Try each language in order
         for lang in languages:
             try:
-                transcript_data = YouTubeTranscriptApi.get_transcript(video_id, languages=[lang])
+                transcript_obj = api.fetch(video_id, languages=[lang])
                 break
             except (NoTranscriptFound, TranscriptsDisabled):
                 continue
 
-        # If no manual transcript, try auto-generated English
-        if not transcript_data:
+        # If no transcript in preferred languages, try English
+        if not transcript_obj:
             try:
-                transcript_data = YouTubeTranscriptApi.get_transcript(video_id, languages=['en'])
+                transcript_obj = api.fetch(video_id, languages=['en'])
             except:
                 pass
 
-        if not transcript_data:
+        if not transcript_obj:
             return None
 
         # Combine all text segments
-        full_text = ' '.join([entry['text'] for entry in transcript_data])
+        full_text = ' '.join([snippet.text for snippet in transcript_obj.snippets])
+
+        # Convert snippets to dict format for compatibility
+        segments = [
+            {
+                'text': snippet.text,
+                'start': snippet.start,
+                'duration': snippet.duration
+            }
+            for snippet in transcript_obj.snippets
+        ]
 
         return {
-            'video_id': video_id,
-            'language': 'en',  # Default to English
-            'is_generated': True,  # Assume auto-generated
+            'video_id': transcript_obj.video_id,
+            'language': transcript_obj.language_code,
+            'is_generated': transcript_obj.is_generated,
             'transcript': full_text,
-            'segments': transcript_data,
-            'duration_seconds': transcript_data[-1]['start'] + transcript_data[-1]['duration'] if transcript_data else 0
+            'segments': segments,
+            'duration_seconds': segments[-1]['start'] + segments[-1]['duration'] if segments else 0
         }
 
     except TranscriptsDisabled:

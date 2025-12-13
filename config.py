@@ -195,6 +195,7 @@ ANALYSIS_TIERS = {
         "description": "Public stats only, no content analysis",
         "max_posts": 0,
         "analyze_videos": False,
+        "deep_research": False,
         "estimated_cost_per_creator": 0.0,
     },
     "standard": {
@@ -205,6 +206,7 @@ ANALYSIS_TIERS = {
         "video_analysis_mode": "transcript",  # transcript, full, or auto
         "max_videos_to_analyze": 3,
         "max_video_duration_seconds": 600,  # 10 minutes
+        "deep_research": False,
         "estimated_cost_per_creator": 0.35,
     },
     "deep": {
@@ -216,7 +218,22 @@ ANALYSIS_TIERS = {
         "max_videos_to_analyze": 5,
         "max_video_duration_seconds": 600,  # 10 minutes
         "max_video_filesize_mb": 100,
+        "deep_research": False,
         "estimated_cost_per_creator": 3.50,
+    },
+    "deep_research": {
+        "name": "Deep Research",
+        "description": "Full analysis + demographics + background research via Gemini Deep Research",
+        "max_posts": 50,
+        "analyze_videos": True,
+        "video_analysis_mode": "auto",
+        "max_videos_to_analyze": 5,
+        "max_video_duration_seconds": 600,  # 10 minutes
+        "max_video_filesize_mb": 100,
+        "deep_research": True,
+        "deep_research_queries": ["demographics"],  # Can include 'background' for more comprehensive research
+        "deep_research_cache_days": 90,  # Cache results for 90 days
+        "estimated_cost_per_creator": 6.00,  # ~$3.50 deep analysis + ~$1-2.50 Deep Research
     }
 }
 

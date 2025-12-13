@@ -85,6 +85,8 @@ class ReportGenerator:
         accounts_df = self.db.get_social_accounts(creator_id)
 
         platform_data = []
+        demographics_data = {}
+        posts_data = []
         for _, account in accounts_df.iterrows():
             analytics = self.db.get_latest_analytics(account['id'])
             if analytics:
@@ -97,17 +99,42 @@ class ReportGenerator:
                     'profile_url': account['profile_url']
                 })
 
+            # Get demographics data for this platform
+            demographics = self.db.get_demographics_data(account['id'])
+            if demographics:
+                demographics_data[account['platform']] = demographics
+
+            # Get posts analyzed for this platform
+            posts_df = self.db.get_posts_for_account(account['id'], limit=50)
+            if not posts_df.empty:
+                for _, post in posts_df.iterrows():
+                    posts_data.append({
+                        'platform': account['platform'].title(),
+                        'post_date': post.get('post_date'),
+                        'post_type': post.get('post_type', 'post'),
+                        'caption': post.get('caption', ''),
+                        'likes': post.get('likes_count', 0),
+                        'comments': post.get('comments_count', 0),
+                        'shares': post.get('shares_count', 0),
+                        'views': post.get('views_count', 0),
+                        'duration': post.get('duration_seconds', 0),
+                        'post_url': post.get('post_url', ''),
+                        'content_themes': post.get('content_themes', ''),
+                        'brand_safety_score': post.get('brand_safety_score', 0.0),
+                        'sentiment_score': post.get('sentiment_score', 0.0)
+                    })
+
         if format == "markdown":
             return self._generate_markdown_report(
-                creator, brief, report, platform_data
+                creator, brief, report, platform_data, demographics_data, posts_data
             )
         elif format == "html":
             return self._generate_html_report(
-                creator, brief, report, platform_data
+                creator, brief, report, platform_data, demographics_data, posts_data
             )
         else:
             return self._generate_text_report(
-                creator, brief, report, platform_data
+                creator, brief, report, platform_data, demographics_data, posts_data
             )
 
     def _generate_markdown_report(
@@ -115,7 +142,9 @@ class ReportGenerator:
         creator: Dict,
         brief: Dict,
         report: Dict,
-        platform_data: list
+        platform_data: list,
+        demographics_data: Dict = None,
+        posts_data: list = None
     ) -> str:
         """Generate markdown formatted report"""
 
@@ -125,6 +154,173 @@ class ReportGenerator:
 
         for p in platform_data:
             platform_table += f"| {p['platform']} | {p['handle']} | {p['followers']:,} | {p['total_posts']:,} | [Link]({p['profile_url']}) |\n"
+
+        # Demographics section
+        demographics_section = ""
+        if demographics_data:
+            demographics_section = "\n## Audience Demographics\n\n"
+            for platform, demo in demographics_data.items():
+                demographics_section += f"### {platform.title()}\n\n"
+
+                # Gender distribution
+                if 'gender' in demo and demo['gender']:
+                    demographics_section += "**Gender Distribution:**\n"
+                    for gender, percentage in demo['gender'].items():
+                        demographics_section += f"- {gender.title()}: {percentage}%\n"
+                    demographics_section += "\n"
+
+                # Age brackets
+                if 'age_brackets' in demo and demo['age_brackets']:
+                    demographics_section += "**Age Distribution:**\n"
+                    for age_range, percentage in demo['age_brackets'].items():
+                        demographics_section += f"- {age_range}: {percentage}%\n"
+                    demographics_section += "\n"
+
+                # Geography
+                if 'geography' in demo and demo['geography']:
+                    demographics_section += "**Geographic Distribution:**\n"
+                    for geo in demo['geography'][:5]:  # Top 5 countries
+                        demographics_section += f"- {geo.get('country', 'Unknown')}: {geo.get('percentage', 0)}%\n"
+                    demographics_section += "\n"
+
+                # Languages
+                if 'languages' in demo and demo['languages']:
+                    demographics_section += "**Languages:**\n"
+                    for lang in demo['languages'][:3]:  # Top 3 languages
+                        demographics_section += f"- {lang.get('language', 'Unknown')}: {lang.get('percentage', 0)}%\n"
+                    demographics_section += "\n"
+
+                # Data confidence
+                if 'data_confidence' in demo:
+                    demographics_section += f"*Data Confidence: {demo['data_confidence'].title()}*\n"
+                if 'data_source' in demo:
+                    demographics_section += f"*Source: {demo['data_source'].replace('_', ' ').title()}*\n"
+                demographics_section += "\n---\n\n"
+
+        # Posts analysis section
+        posts_section = ""
+        if posts_data:
+            posts_section = "\n## Recent Posts Analyzed\n\n"
+            posts_section += f"**Total Posts Analyzed**: {len(posts_data)}\n\n"
+
+            # Group posts by platform
+            posts_by_platform = {}
+            for post in posts_data:
+                platform = post['platform']
+                if platform not in posts_by_platform:
+                    posts_by_platform[platform] = []
+                posts_by_platform[platform].append(post)
+
+            # Display posts per platform
+            for platform, platform_posts in posts_by_platform.items():
+                posts_section += f"### {platform} ({len(platform_posts)} posts)\n\n"
+
+                # Calculate aggregate metrics
+                total_likes = sum(p.get('likes', 0) for p in platform_posts)
+                total_comments = sum(p.get('comments', 0) for p in platform_posts)
+                total_views = sum(p.get('views', 0) for p in platform_posts if p.get('views'))
+                avg_brand_safety = sum(p.get('brand_safety_score', 0) for p in platform_posts if p.get('brand_safety_score')) / len([p for p in platform_posts if p.get('brand_safety_score')]) if any(p.get('brand_safety_score') for p in platform_posts) else 0
+
+                posts_section += f"**Aggregate Metrics:**\n"
+                posts_section += f"- Total Likes: {total_likes:,}\n"
+                posts_section += f"- Total Comments: {total_comments:,}\n"
+                if total_views > 0:
+                    posts_section += f"- Total Views: {total_views:,}\n"
+                if avg_brand_safety > 0:
+                    posts_section += f"- Average Brand Safety Score: {avg_brand_safety:.1f}/5.0\n"
+                posts_section += "\n"
+
+                # Show top 5 posts by engagement
+                sorted_posts = sorted(platform_posts, key=lambda p: p.get('likes', 0) + p.get('comments', 0) * 3, reverse=True)[:5]
+                posts_section += "**Top 5 Posts by Engagement:**\n\n"
+
+                for idx, post in enumerate(sorted_posts, 1):
+                    posts_section += f"**{idx}.** "
+
+                    # Post date
+                    if post.get('post_date'):
+                        try:
+                            post_date = post['post_date'].split('T')[0] if isinstance(post['post_date'], str) else str(post['post_date'])[:10]
+                            posts_section += f"*{post_date}* - "
+                        except:
+                            pass
+
+                    # Post type
+                    if post.get('post_type'):
+                        posts_section += f"`{post['post_type']}` "
+
+                    # Caption preview
+                    caption = post.get('caption', '')
+                    if caption:
+                        caption_preview = caption[:100] + "..." if len(caption) > 100 else caption
+                        posts_section += f"{caption_preview}\n"
+                    else:
+                        posts_section += "\n"
+
+                    # Engagement metrics
+                    metrics = []
+                    if post.get('likes'):
+                        metrics.append(f"{post['likes']:,} likes")
+                    if post.get('comments'):
+                        metrics.append(f"{post['comments']:,} comments")
+                    if post.get('views'):
+                        metrics.append(f"{post['views']:,} views")
+                    if post.get('shares'):
+                        metrics.append(f"{post['shares']:,} shares")
+
+                    if metrics:
+                        posts_section += f"   - {' | '.join(metrics)}\n"
+
+                    # Brand safety score
+                    if post.get('brand_safety_score'):
+                        posts_section += f"   - Brand Safety: {post['brand_safety_score']:.1f}/5.0\n"
+
+                    # Content themes
+                    if post.get('content_themes'):
+                        themes = post['content_themes']
+                        if isinstance(themes, str):
+                            try:
+                                import json
+                                themes = json.loads(themes)
+                            except:
+                                themes = [themes]
+                        if themes and (isinstance(themes, list) and themes):
+                            themes_str = ', '.join(themes[:3]) if isinstance(themes, list) else str(themes)
+                            posts_section += f"   - Themes: {themes_str}\n"
+
+                    # Post URL
+                    if post.get('post_url'):
+                        posts_section += f"   - [View Post]({post['post_url']})\n"
+
+                    posts_section += "\n"
+
+                posts_section += "---\n\n"
+
+        # Content themes section
+        content_analysis = report.get('content_analysis', {})
+        content_themes = content_analysis.get('content_themes', [])
+        content_themes_section = ""
+        if content_themes:
+            content_themes_section = "\n## Content Themes\n\n"
+            content_themes_section += "Primary topics and themes identified across analyzed content:\n\n"
+            for theme in content_themes[:8]:  # Show top 8 themes
+                content_themes_section += f"- {theme}\n"
+            content_themes_section += "\n"
+
+            # Add key metrics from content analysis
+            if content_analysis:
+                content_themes_section += "**Content Quality Metrics:**\n\n"
+                if content_analysis.get('brand_safety_score'):
+                    content_themes_section += f"- Brand Safety Score: {content_analysis.get('brand_safety_score', 'N/A')}/5.0\n"
+                if content_analysis.get('authenticity_score'):
+                    content_themes_section += f"- Authenticity Score: {content_analysis.get('authenticity_score', 'N/A')}/5.0\n"
+                if content_analysis.get('audience_engagement_quality'):
+                    content_themes_section += f"- Audience Engagement: {content_analysis.get('audience_engagement_quality', 'N/A').title()}\n"
+                if content_analysis.get('production_quality'):
+                    content_themes_section += f"- Production Quality: {content_analysis.get('production_quality', 'N/A').title()}\n"
+                if content_analysis.get('sentiment'):
+                    content_themes_section += f"- Overall Sentiment: {content_analysis.get('sentiment', 'N/A').title()}\n"
+                content_themes_section += "\n---\n\n"
 
         # Strengths and concerns
         strengths = report.get('strengths', [])
@@ -177,7 +373,7 @@ class ReportGenerator:
 
 ---
 
-## Content Analysis
+{demographics_section}{posts_section}{content_themes_section}## Content Analysis
 
 ### Strengths
 {strengths_list}
@@ -210,7 +406,9 @@ class ReportGenerator:
         creator: Dict,
         brief: Dict,
         report: Dict,
-        platform_data: list
+        platform_data: list,
+        demographics_data: Dict = None,
+        posts_data: list = None
     ) -> str:
         """Generate HTML formatted report"""
 
@@ -226,6 +424,75 @@ class ReportGenerator:
                     <td><a href="{p['profile_url']}" target="_blank">View Profile</a></td>
                 </tr>
             """
+
+        # Posts analysis section HTML
+        posts_html = ""
+        if posts_data:
+            posts_html = f'<h2>Recent Posts Analyzed</h2><p><strong>Total Posts Analyzed:</strong> {len(posts_data)}</p>'
+
+            # Group posts by platform
+            posts_by_platform = {}
+            for post in posts_data:
+                platform = post['platform']
+                if platform not in posts_by_platform:
+                    posts_by_platform[platform] = []
+                posts_by_platform[platform].append(post)
+
+            for platform, platform_posts in posts_by_platform.items():
+                posts_html += f'<h3>{platform} ({len(platform_posts)} posts)</h3>'
+
+                # Aggregate metrics
+                total_likes = sum(p.get('likes', 0) for p in platform_posts)
+                total_comments = sum(p.get('comments', 0) for p in platform_posts)
+                total_views = sum(p.get('views', 0) for p in platform_posts if p.get('views'))
+
+                posts_html += '<p><strong>Aggregate Metrics:</strong></p><ul>'
+                posts_html += f'<li>Total Likes: {total_likes:,}</li>'
+                posts_html += f'<li>Total Comments: {total_comments:,}</li>'
+                if total_views > 0:
+                    posts_html += f'<li>Total Views: {total_views:,}</li>'
+                posts_html += '</ul>'
+
+                # Top 5 posts
+                sorted_posts = sorted(platform_posts, key=lambda p: p.get('likes', 0) + p.get('comments', 0) * 3, reverse=True)[:5]
+                posts_html += '<p><strong>Top 5 Posts by Engagement:</strong></p>'
+
+                for idx, post in enumerate(sorted_posts, 1):
+                    posts_html += f'<div style="margin: 15px 0; padding: 10px; background-color: #f8f9fa; border-radius: 5px;">'
+                    posts_html += f'<p><strong>{idx}.</strong> '
+
+                    # Post date and type
+                    if post.get('post_date'):
+                        try:
+                            post_date = post['post_date'].split('T')[0] if isinstance(post['post_date'], str) else str(post['post_date'])[:10]
+                            posts_html += f'<em>{post_date}</em> - '
+                        except:
+                            pass
+
+                    if post.get('post_type'):
+                        posts_html += f'<code>{post["post_type"]}</code> '
+
+                    posts_html += '</p>'
+
+                    # Caption
+                    caption = post.get('caption', '')
+                    if caption:
+                        caption_preview = caption[:150] + "..." if len(caption) > 150 else caption
+                        posts_html += f'<p>{caption_preview}</p>'
+
+                    # Metrics
+                    posts_html += '<ul style="margin: 5px 0;">'
+                    if post.get('likes'):
+                        posts_html += f'<li>{post["likes"]:,} likes</li>'
+                    if post.get('comments'):
+                        posts_html += f'<li>{post["comments"]:,} comments</li>'
+                    if post.get('views'):
+                        posts_html += f'<li>{post["views"]:,} views</li>'
+                    if post.get('brand_safety_score'):
+                        posts_html += f'<li>Brand Safety: {post["brand_safety_score"]:.1f}/5.0</li>'
+                    if post.get('post_url'):
+                        posts_html += f'<li><a href="{post["post_url"]}" target="_blank">View Post</a></li>'
+                    posts_html += '</ul></div>'
 
         # Strengths, concerns, recommendations
         strengths = report.get('strengths', [])
@@ -315,6 +582,8 @@ class ReportGenerator:
         </tbody>
     </table>
 
+    {posts_html}
+
     <h2>Content Analysis</h2>
 
     <h3>Strengths</h3>
@@ -344,7 +613,9 @@ class ReportGenerator:
         creator: Dict,
         brief: Dict,
         report: Dict,
-        platform_data: list
+        platform_data: list,
+        demographics_data: Dict = None,
+        posts_data: list = None
     ) -> str:
         """Generate plain text formatted report"""
 
@@ -377,6 +648,81 @@ Followers: {p['followers']:,}
 Total Posts: {p['total_posts']:,}
 Profile: {p['profile_url']}
 """
+
+        # Posts analysis section
+        if posts_data:
+            text += f"""
+{'-'*80}
+RECENT POSTS ANALYZED
+{'-'*80}
+
+Total Posts Analyzed: {len(posts_data)}
+
+"""
+            # Group posts by platform
+            posts_by_platform = {}
+            for post in posts_data:
+                platform = post['platform']
+                if platform not in posts_by_platform:
+                    posts_by_platform[platform] = []
+                posts_by_platform[platform].append(post)
+
+            for platform, platform_posts in posts_by_platform.items():
+                text += f"\n{platform} ({len(platform_posts)} posts)\n"
+                text += "-" * 40 + "\n\n"
+
+                # Aggregate metrics
+                total_likes = sum(p.get('likes', 0) for p in platform_posts)
+                total_comments = sum(p.get('comments', 0) for p in platform_posts)
+                total_views = sum(p.get('views', 0) for p in platform_posts if p.get('views'))
+
+                text += "Aggregate Metrics:\n"
+                text += f"  - Total Likes: {total_likes:,}\n"
+                text += f"  - Total Comments: {total_comments:,}\n"
+                if total_views > 0:
+                    text += f"  - Total Views: {total_views:,}\n"
+                text += "\n"
+
+                # Top 5 posts
+                sorted_posts = sorted(platform_posts, key=lambda p: p.get('likes', 0) + p.get('comments', 0) * 3, reverse=True)[:5]
+                text += "Top 5 Posts by Engagement:\n\n"
+
+                for idx, post in enumerate(sorted_posts, 1):
+                    text += f"{idx}. "
+
+                    # Post date
+                    if post.get('post_date'):
+                        try:
+                            post_date = post['post_date'].split('T')[0] if isinstance(post['post_date'], str) else str(post['post_date'])[:10]
+                            text += f"{post_date} - "
+                        except:
+                            pass
+
+                    # Post type
+                    if post.get('post_type'):
+                        text += f"[{post['post_type']}] "
+
+                    # Caption
+                    caption = post.get('caption', '')
+                    if caption:
+                        caption_preview = caption[:80] + "..." if len(caption) > 80 else caption
+                        text += f"\n   {caption_preview}\n"
+                    else:
+                        text += "\n"
+
+                    # Metrics
+                    if post.get('likes'):
+                        text += f"   - Likes: {post['likes']:,}\n"
+                    if post.get('comments'):
+                        text += f"   - Comments: {post['comments']:,}\n"
+                    if post.get('views'):
+                        text += f"   - Views: {post['views']:,}\n"
+                    if post.get('brand_safety_score'):
+                        text += f"   - Brand Safety: {post['brand_safety_score']:.1f}/5.0\n"
+                    if post.get('post_url'):
+                        text += f"   - URL: {post['post_url']}\n"
+
+                    text += "\n"
 
         text += f"""
 {'-'*80}
@@ -573,28 +919,117 @@ Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${r
                     markdown += f"- {rec}\n"
                 markdown += "\n"
 
-            # Platform details
+            # Get content analysis for themes
+            try:
+                content_analysis = json.loads(row['content_analysis']) if isinstance(row['content_analysis'], str) else row.get('content_analysis', {})
+                if content_analysis and content_analysis.get('content_themes'):
+                    content_themes = content_analysis.get('content_themes', [])
+                    markdown += "**Content Themes:**\n"
+                    for theme in content_themes[:8]:
+                        markdown += f"- {theme}\n"
+                    markdown += "\n"
+
+                    # Add quality metrics
+                    markdown += "**Content Quality Metrics:**\n"
+                    if content_analysis.get('brand_safety_score'):
+                        markdown += f"- Brand Safety: {content_analysis.get('brand_safety_score')}/5.0\n"
+                    if content_analysis.get('authenticity_score'):
+                        markdown += f"- Authenticity: {content_analysis.get('authenticity_score')}/5.0\n"
+                    if content_analysis.get('audience_engagement_quality'):
+                        markdown += f"- Engagement Quality: {content_analysis.get('audience_engagement_quality', 'N/A').title()}\n"
+                    markdown += "\n"
+            except:
+                pass
+
+            # Platform details with demographics and posts
             creator_id = int(row['creator_id'])
             accounts_df = self.db.get_social_accounts(creator_id)
 
             if not accounts_df.empty:
                 markdown += "**Platform Presence:**\n\n"
-                markdown += "| Platform | Handle | Followers | Engagement |\n"
-                markdown += "|----------|--------|-----------|------------|\n"
 
                 for _, acc in accounts_df.iterrows():
+                    platform = acc['platform']
+                    markdown += f"#### {platform.title()}\n\n"
+
                     analytics = self.db.get_latest_analytics(int(acc['id']))
                     if analytics:
                         followers = f"{analytics.get('followers_count', 0):,}"
                         engagement = f"{analytics.get('engagement_rate', 0):.2f}%"
+                        total_posts = analytics.get('total_posts', 0)
                     else:
                         followers = "N/A"
                         engagement = "N/A"
+                        total_posts = 0
 
                     handle = acc['profile_url'].split('/')[-1] if '/' in acc['profile_url'] else acc['profile_url']
-                    markdown += f"| {acc['platform']} | @{handle} | {followers} | {engagement} |\n"
+                    markdown += f"- **Handle:** @{handle}\n"
+                    markdown += f"- **Followers:** {followers}\n"
+                    markdown += f"- **Engagement Rate:** {engagement}\n"
+                    markdown += f"- **Total Posts:** {total_posts:,}\n"
+                    markdown += f"- **Profile:** {acc['profile_url']}\n\n"
 
-            markdown += f"\n**Analysis Cost:** ${row['analysis_cost']:.2f}\n"
+                    # Get demographics if available
+                    demographics = self.db.get_demographics_data(int(acc['id']))
+                    if demographics:
+                        markdown += "**Audience Demographics:**\n\n"
+
+                        if demographics.get('gender'):
+                            markdown += "Gender Distribution:\n"
+                            for gender, pct in demographics['gender'].items():
+                                markdown += f"- {gender.title()}: {pct}%\n"
+                            markdown += "\n"
+
+                        if demographics.get('age_brackets'):
+                            markdown += "Age Distribution:\n"
+                            for age, pct in list(demographics['age_brackets'].items())[:5]:
+                                markdown += f"- {age}: {pct}%\n"
+                            markdown += "\n"
+
+                        if demographics.get('geography'):
+                            markdown += "Top Countries:\n"
+                            for geo in demographics['geography'][:3]:
+                                markdown += f"- {geo.get('country', 'Unknown')}: {geo.get('percentage', 0)}%\n"
+                            markdown += "\n"
+
+                    # Get posts for this platform
+                    posts_df = self.db.get_posts_for_account(int(acc['id']), limit=50)
+                    if not posts_df.empty:
+                        # Calculate aggregate metrics
+                        total_likes = posts_df['likes_count'].sum()
+                        total_comments = posts_df['comments_count'].sum()
+                        total_views = posts_df['views_count'].sum() if 'views_count' in posts_df else 0
+
+                        markdown += f"**Recent Posts Analyzed:** {len(posts_df)}\n\n"
+                        markdown += "Aggregate Engagement:\n"
+                        markdown += f"- Total Likes: {int(total_likes):,}\n"
+                        markdown += f"- Total Comments: {int(total_comments):,}\n"
+                        if total_views > 0:
+                            markdown += f"- Total Views: {int(total_views):,}\n"
+                        markdown += "\n"
+
+                        # Show top 3 posts
+                        posts_df['engagement'] = posts_df['likes_count'] + posts_df['comments_count'] * 3
+                        top_posts = posts_df.nlargest(3, 'engagement')
+
+                        markdown += "Top 3 Posts by Engagement:\n\n"
+                        for post_idx, (_, post) in enumerate(top_posts.iterrows(), 1):
+                            post_date = str(post.get('post_date', ''))[:10]
+                            caption = post.get('caption', '')
+                            caption_preview = caption[:80] + "..." if len(caption) > 80 else caption
+
+                            markdown += f"{post_idx}. **{post_date}** - {caption_preview}\n"
+                            markdown += f"   - {int(post.get('likes_count', 0)):,} likes, {int(post.get('comments_count', 0)):,} comments"
+                            if post.get('views_count', 0) > 0:
+                                markdown += f", {int(post['views_count']):,} views"
+                            markdown += "\n"
+                            if post.get('post_url'):
+                                markdown += f"   - [View Post]({post['post_url']})\n"
+                            markdown += "\n"
+
+                    markdown += "---\n\n"
+
+            markdown += f"**Analysis Cost:** ${row['analysis_cost']:.2f}\n"
             markdown += f"**Generated:** {row['generated_at']}\n\n"
             markdown += "---\n\n"
 
@@ -744,8 +1179,113 @@ Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${r
                 '\n'.join(f"• {r}" for r in recommendations) if recommendations else 'N/A'
             ])
 
+        # Sheet 4: Post Analysis
+        ws_posts = wb.create_sheet("Post Analysis")
+
+        # Headers
+        post_headers = ['Creator', 'Platform', 'Post Date', 'Post Type', 'Caption',
+                        'Likes', 'Comments', 'Views', 'Brand Safety', 'Post URL']
+        ws_posts.append(post_headers)
+
+        # Style headers
+        for cell in ws_posts[1]:
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+            cell.font = Font(bold=True, color="FFFFFF")
+
+        # Add post data for each creator
+        for _, row in reports_df.iterrows():
+            creator_id = int(row['creator_id'])
+            creator_name = row['creator_name']
+            accounts_df = self.db.get_social_accounts(creator_id)
+
+            for _, acc in accounts_df.iterrows():
+                posts_df = self.db.get_posts_for_account(int(acc['id']), limit=50)
+                if not posts_df.empty:
+                    # Sort by engagement
+                    posts_df['engagement'] = posts_df['likes_count'] + posts_df['comments_count'] * 3
+                    posts_df = posts_df.nlargest(10, 'engagement')  # Top 10 posts per platform
+
+                    for _, post in posts_df.iterrows():
+                        post_date = str(post.get('post_date', ''))[:10]
+                        caption = post.get('caption', '')
+                        caption_preview = caption[:100] + "..." if len(caption) > 100 else caption
+
+                        ws_posts.append([
+                            creator_name,
+                            acc['platform'].title(),
+                            post_date,
+                            post.get('post_type', 'post'),
+                            caption_preview,
+                            int(post.get('likes_count', 0)),
+                            int(post.get('comments_count', 0)),
+                            int(post.get('views_count', 0)) if post.get('views_count') else 0,
+                            f"{post.get('brand_safety_score', 0):.1f}" if post.get('brand_safety_score') else 'N/A',
+                            post.get('post_url', '')
+                        ])
+
+        # Sheet 5: Demographics
+        ws_demographics = wb.create_sheet("Demographics")
+
+        # Headers
+        demo_headers = ['Creator', 'Platform', 'Followers', 'Female %', 'Male %',
+                        'Age 18-24 %', 'Age 25-34 %', 'Top Country', 'Top Country %', 'Data Source']
+        ws_demographics.append(demo_headers)
+
+        # Style headers
+        for cell in ws_demographics[1]:
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+            cell.font = Font(bold=True, color="FFFFFF")
+
+        # Add demographics data
+        for _, row in reports_df.iterrows():
+            creator_id = int(row['creator_id'])
+            creator_name = row['creator_name']
+            accounts_df = self.db.get_social_accounts(creator_id)
+
+            for _, acc in accounts_df.iterrows():
+                analytics = self.db.get_latest_analytics(int(acc['id']))
+                demographics = self.db.get_demographics_data(int(acc['id']))
+
+                followers = analytics.get('followers_count', 0) if analytics else 0
+
+                if demographics:
+                    gender = demographics.get('gender', {})
+                    age_brackets = demographics.get('age_brackets', {})
+                    geography = demographics.get('geography', [])
+
+                    female_pct = gender.get('female', 0)
+                    male_pct = gender.get('male', 0)
+                    age_18_24 = age_brackets.get('18-24', 0)
+                    age_25_34 = age_brackets.get('25-34', 0)
+                    top_country = geography[0].get('country', 'N/A') if geography else 'N/A'
+                    top_country_pct = geography[0].get('percentage', 0) if geography else 0
+                    data_source = demographics.get('data_source', 'N/A')
+
+                    ws_demographics.append([
+                        creator_name,
+                        acc['platform'].title(),
+                        f"{followers:,}",
+                        f"{female_pct}%",
+                        f"{male_pct}%",
+                        f"{age_18_24}%",
+                        f"{age_25_34}%",
+                        top_country,
+                        f"{top_country_pct}%",
+                        data_source
+                    ])
+                else:
+                    # Add row with N/A if no demographics
+                    ws_demographics.append([
+                        creator_name,
+                        acc['platform'].title(),
+                        f"{followers:,}",
+                        'N/A', 'N/A', 'N/A', 'N/A', 'N/A', 'N/A', 'No data'
+                    ])
+
         # Adjust column widths
-        for ws in [ws_summary, ws_comparison, ws_details]:
+        for ws in [ws_summary, ws_comparison, ws_details, ws_posts, ws_demographics]:
             for column in ws.columns:
                 max_length = 0
                 column_letter = column[0].column_letter
@@ -905,28 +1445,80 @@ Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${r
 
         elements.append(PageBreak())
 
-        # Individual Creator Reports (abbreviated for PDF)
-        elements.append(Paragraph("Individual Creator Summaries", heading_style))
+        # Individual Creator Reports (enhanced for PDF)
+        elements.append(Paragraph("Individual Creator Detailed Reports", heading_style))
 
         for idx, (_, row) in enumerate(reports_df.iterrows(), 1):
             elements.append(Paragraph(f"<b>{idx}. {row['creator_name']}</b> - {row['overall_score']:.1f}/5.0", styles['Heading3']))
             elements.append(Spacer(1, 6))
             elements.append(Paragraph(f"<b>Summary:</b> {row.get('summary', 'No summary available')}", styles['Normal']))
-            elements.append(Spacer(1, 6))
+            elements.append(Spacer(1, 8))
 
             # Parse lists
             try:
                 strengths = json.loads(row['strengths']) if isinstance(row['strengths'], str) else row['strengths']
+                concerns = json.loads(row['concerns']) if isinstance(row['concerns'], str) else row['concerns']
+
                 if strengths:
-                    elements.append(Paragraph("<b>Strengths:</b>", styles['Normal']))
-                    for strength in strengths[:3]:  # Limit to 3 for space
+                    elements.append(Paragraph("<b>Key Strengths:</b>", styles['Normal']))
+                    for strength in strengths[:5]:  # Top 5 strengths
                         elements.append(Paragraph(f"• {strength}", styles['Normal']))
+                    elements.append(Spacer(1, 6))
+
+                if concerns:
+                    elements.append(Paragraph("<b>Potential Concerns:</b>", styles['Normal']))
+                    for concern in concerns[:3]:  # Top 3 concerns
+                        elements.append(Paragraph(f"• {concern}", styles['Normal']))
                     elements.append(Spacer(1, 6))
             except:
                 pass
 
-            elements.append(Spacer(1, 12))
+            # Platform details and posts
+            creator_id = int(row['creator_id'])
+            accounts_df = self.db.get_social_accounts(creator_id)
+
+            if not accounts_df.empty:
+                elements.append(Paragraph("<b>Platform Analytics:</b>", styles['Normal']))
+                elements.append(Spacer(1, 4))
+
+                for _, acc in accounts_df.iterrows():
+                    platform = acc['platform'].title()
+                    analytics = self.db.get_latest_analytics(int(acc['id']))
+
+                    if analytics:
+                        followers = f"{analytics.get('followers_count', 0):,}"
+                        engagement = f"{analytics.get('engagement_rate', 0):.2f}%"
+
+                        elements.append(Paragraph(f"<b>{platform}:</b> {followers} followers | {engagement} engagement", styles['Normal']))
+
+                        # Get top 3 posts
+                        posts_df = self.db.get_posts_for_account(int(acc['id']), limit=50)
+                        if not posts_df.empty:
+                            posts_df['engagement_calc'] = posts_df['likes_count'] + posts_df['comments_count'] * 3
+                            top_posts = posts_df.nlargest(3, 'engagement_calc')
+
+                            total_likes = int(posts_df['likes_count'].sum())
+                            total_comments = int(posts_df['comments_count'].sum())
+
+                            elements.append(Paragraph(f"  Recent Posts: {len(posts_df)} analyzed | {total_likes:,} total likes | {total_comments:,} total comments", styles['Normal']))
+
+                            # Add top post preview
+                            if not top_posts.empty:
+                                top_post = top_posts.iloc[0]
+                                caption = top_post.get('caption', '')
+                                caption_preview = caption[:60] + "..." if len(caption) > 60 else caption
+                                likes = int(top_post.get('likes_count', 0))
+                                comments = int(top_post.get('comments_count', 0))
+                                elements.append(Paragraph(f"  Top Post: {likes:,} likes, {comments:,} comments - {caption_preview}", styles['Normal']))
+
+                        elements.append(Spacer(1, 4))
+
+                elements.append(Spacer(1, 6))
+
+            # Add page break between creators
             if idx < len(reports_df):
+                elements.append(Spacer(1, 12))
+                elements.append(Paragraph("─" * 80, styles['Normal']))
                 elements.append(Spacer(1, 12))
 
         # Build PDF

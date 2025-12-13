@@ -256,6 +256,46 @@ class DatabaseManager:
             )
         """)
 
+        # Deep Research Queries table (caching for Deep Research API results)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS deep_research_queries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                query_hash TEXT UNIQUE NOT NULL,
+                query_text TEXT NOT NULL,
+                query_type TEXT NOT NULL,
+                creator_id INTEGER,
+                social_account_id INTEGER,
+                interaction_id TEXT,
+                status TEXT DEFAULT 'pending',
+                result_data TEXT,
+                citations TEXT,
+                cost REAL DEFAULT 0.0,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                completed_at TIMESTAMP,
+                expires_at TIMESTAMP,
+                error_message TEXT,
+                FOREIGN KEY (creator_id) REFERENCES creators(id) ON DELETE CASCADE,
+                FOREIGN KEY (social_account_id) REFERENCES social_accounts(id) ON DELETE CASCADE
+            )
+        """)
+
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_query_hash
+            ON deep_research_queries(query_hash)
+        """)
+
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_creator_type
+            ON deep_research_queries(creator_id, query_type)
+        """)
+
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_status
+            ON deep_research_queries(status)
+        """)
+
         # YouTube API Keys table (for YouTube Data API v3 integration)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS youtube_api_keys (
@@ -1657,6 +1697,44 @@ class DatabaseManager:
         conn.close()
         return df
 
+    def delete_creator_report(self, report_id: int, user_id: int) -> bool:
+        """
+        Delete a creator report
+
+        Args:
+            report_id: Report ID to delete
+            user_id: User ID (for authorization check)
+
+        Returns:
+            True if deleted successfully, False otherwise
+        """
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+
+            # Verify the report belongs to the user (through the brief)
+            cursor.execute("""
+                SELECT cr.id
+                FROM creator_reports cr
+                JOIN briefs b ON cr.brief_id = b.id
+                WHERE cr.id = ? AND b.user_id = ?
+            """, (report_id, user_id))
+
+            if not cursor.fetchone():
+                print(f"Report {report_id} not found or doesn't belong to user {user_id}")
+                conn.close()
+                return False
+
+            # Delete the report
+            cursor.execute("DELETE FROM creator_reports WHERE id = ?", (report_id,))
+            conn.commit()
+            conn.close()
+            return True
+
+        except Exception as e:
+            print(f"Error deleting report: {e}")
+            return False
+
     # --- Post Analysis Operations ---
 
     def save_post_analysis(self, social_account_id: int, post_data: Dict) -> int:
@@ -1707,6 +1785,211 @@ class DatabaseManager:
         """, conn, params=(social_account_id, limit))
         conn.close()
         return df
+
+    # === Deep Research Methods ===
+
+    def save_deep_research_query(self, query_data: Dict) -> int:
+        """
+        Save a Deep Research query and result to database
+
+        Args:
+            query_data: Dictionary with keys:
+                - query_hash: Unique hash of query
+                - query_text: Full query text
+                - query_type: 'demographics' | 'background' | 'market'
+                - creator_id: Creator ID (optional)
+                - social_account_id: Social account ID (optional)
+                - interaction_id: Gemini interaction ID
+                - status: 'pending' | 'running' | 'completed' | 'failed'
+                - result_data: JSON result (optional)
+                - citations: JSON citations (optional)
+                - cost: Cost in USD
+                - input_tokens: Number of input tokens
+                - output_tokens: Number of output tokens
+                - expires_at: Cache expiration datetime (optional)
+                - error_message: Error message if failed (optional)
+
+        Returns:
+            Query ID
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            INSERT INTO deep_research_queries (
+                query_hash, query_text, query_type, creator_id, social_account_id,
+                interaction_id, status, result_data, citations, cost,
+                input_tokens, output_tokens, completed_at, expires_at, error_message
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            query_data['query_hash'],
+            query_data['query_text'],
+            query_data['query_type'],
+            query_data.get('creator_id'),
+            query_data.get('social_account_id'),
+            query_data.get('interaction_id', ''),
+            query_data.get('status', 'pending'),
+            json.dumps(query_data.get('result_data')) if query_data.get('result_data') else None,
+            json.dumps(query_data.get('citations')) if query_data.get('citations') else None,
+            query_data.get('cost', 0.0),
+            query_data.get('input_tokens', 0),
+            query_data.get('output_tokens', 0),
+            datetime.now() if query_data.get('status') == 'completed' else None,
+            query_data.get('expires_at'),
+            query_data.get('error_message')
+        ))
+
+        query_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return query_id
+
+    def get_cached_deep_research(self, query_hash: str) -> Optional[Dict]:
+        """
+        Get cached Deep Research result by query hash
+
+        Args:
+            query_hash: Query hash
+
+        Returns:
+            Query result dictionary or None if not found/expired
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT * FROM deep_research_queries
+            WHERE query_hash = ?
+            AND status = 'completed'
+            AND (expires_at IS NULL OR expires_at > datetime('now'))
+            ORDER BY completed_at DESC
+            LIMIT 1
+        """, (query_hash,))
+
+        row = cursor.fetchone()
+        conn.close()
+
+        if row:
+            return {
+                'id': row['id'],
+                'query_hash': row['query_hash'],
+                'query_text': row['query_text'],
+                'query_type': row['query_type'],
+                'creator_id': row['creator_id'],
+                'social_account_id': row['social_account_id'],
+                'interaction_id': row['interaction_id'],
+                'status': row['status'],
+                'result_data': json.loads(row['result_data']) if row['result_data'] else {},
+                'citations': json.loads(row['citations']) if row['citations'] else [],
+                'cost': row['cost'],
+                'input_tokens': row['input_tokens'],
+                'output_tokens': row['output_tokens'],
+                'created_at': row['created_at'],
+                'completed_at': row['completed_at'],
+                'expires_at': row['expires_at']
+            }
+        return None
+
+    def get_deep_research_by_creator(self, creator_id: int, query_type: Optional[str] = None) -> pd.DataFrame:
+        """
+        Get all Deep Research queries for a creator
+
+        Args:
+            creator_id: Creator ID
+            query_type: Optional filter by query type
+
+        Returns:
+            DataFrame of queries
+        """
+        conn = self._get_connection()
+
+        if query_type:
+            df = pd.read_sql_query("""
+                SELECT * FROM deep_research_queries
+                WHERE creator_id = ? AND query_type = ?
+                ORDER BY created_at DESC
+            """, conn, params=(creator_id, query_type))
+        else:
+            df = pd.read_sql_query("""
+                SELECT * FROM deep_research_queries
+                WHERE creator_id = ?
+                ORDER BY created_at DESC
+            """, conn, params=(creator_id,))
+
+        conn.close()
+        return df
+
+    def save_demographics_data(self, social_account_id: int, demographics: Dict):
+        """
+        Update demographics_data in platform_analytics
+
+        Args:
+            social_account_id: Social account ID
+            demographics: Demographics dictionary
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        # Check if there's an existing analytics record for today
+        cursor.execute("""
+            SELECT id FROM platform_analytics
+            WHERE social_account_id = ?
+            AND snapshot_date = date('now')
+        """, (social_account_id,))
+
+        row = cursor.fetchone()
+
+        if row:
+            # Update existing record
+            cursor.execute("""
+                UPDATE platform_analytics
+                SET demographics_data = ?
+                WHERE id = ?
+            """, (json.dumps(demographics), row['id']))
+        else:
+            # Create new record
+            cursor.execute("""
+                INSERT INTO platform_analytics (
+                    social_account_id, snapshot_date, demographics_data, data_source
+                ) VALUES (?, date('now'), ?, 'deep_research')
+            """, (social_account_id, json.dumps(demographics)))
+
+        conn.commit()
+        conn.close()
+
+    def get_demographics_data(self, social_account_id: int) -> Optional[Dict]:
+        """
+        Get most recent demographics data for a social account
+
+        Args:
+            social_account_id: Social account ID
+
+        Returns:
+            Demographics dictionary or None
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT demographics_data, snapshot_date
+            FROM platform_analytics
+            WHERE social_account_id = ?
+            AND demographics_data IS NOT NULL
+            ORDER BY snapshot_date DESC
+            LIMIT 1
+        """, (social_account_id,))
+
+        row = cursor.fetchone()
+        conn.close()
+
+        if row and row['demographics_data']:
+            try:
+                demographics = json.loads(row['demographics_data'])
+                demographics['snapshot_date'] = row['snapshot_date']
+                return demographics
+            except json.JSONDecodeError:
+                return None
+        return None
 
 
 # Singleton instance

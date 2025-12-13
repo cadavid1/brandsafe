@@ -14,3 +14,7 @@ openpyxl
 markdown
 yt-dlp
 youtube-transcript-api
+instaloader>=4.13.2
+TikTokApi>=6.5.2
+playwright>=1.40.0
+requests>=2.31.0
