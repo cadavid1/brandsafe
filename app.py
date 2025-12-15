@@ -661,6 +661,186 @@ with tab_setup:
         else:
             st.caption("Debug mode is off - minimal console output")
 
+        st.markdown("---")
+
+        # Demographics Debug Mode
+        demographics_debug = db.get_setting(user_id, "demographics_debug", "false") == "true"
+
+        new_demographics_debug = st.checkbox(
+            "Enable Demographics Debug Logging",
+            value=demographics_debug,
+            help="Shows detailed logs specifically for demographics data fetching, caching, and storage"
+        )
+
+        if new_demographics_debug != demographics_debug:
+            db.save_setting(user_id, "demographics_debug", "true" if new_demographics_debug else "false")
+            if new_demographics_debug:
+                st.success("✅ Demographics debug enabled - detailed tracking in terminal")
+            else:
+                st.success("✅ Demographics debug disabled")
+            st.rerun()
+
+        if demographics_debug:
+            st.info("📊 Demographics debug is ON - tracking data flow in terminal")
+
+            # Add diagnostics button
+            if st.button("🔍 Run Demographics Diagnostics", help="Check demographics data status for all creators"):
+                st.markdown("### Demographics Diagnostics Report")
+
+                # Get all creators for this user
+                creators = db.get_creators(user_id)
+                if creators.empty:
+                    st.warning("No creators found")
+                else:
+                    total_accounts = 0
+                    accounts_with_demographics = 0
+                    demographics_details = []
+
+                    for _, creator in creators.iterrows():
+                        accounts = db.get_social_accounts(creator['id'])
+                        for _, account in accounts.iterrows():
+                            total_accounts += 1
+                            demo_data = db.get_demographics_data(account['id'])
+
+                            if demo_data:
+                                accounts_with_demographics += 1
+                                demographics_details.append({
+                                    'Creator': creator['name'],
+                                    'Platform': account['platform'].title(),
+                                    'Has Demographics': '✅ Yes',
+                                    'Data Source': demo_data.get('data_source', 'Unknown'),
+                                    'Snapshot Date': demo_data.get('snapshot_date', 'N/A'),
+                                    'Data Confidence': demo_data.get('data_confidence', 'N/A'),
+                                    'Has Gender': '✓' if demo_data.get('gender') else '✗',
+                                    'Has Age': '✓' if demo_data.get('age_brackets') else '✗',
+                                    'Has Geography': '✓' if demo_data.get('geography') else '✗'
+                                })
+                            else:
+                                demographics_details.append({
+                                    'Creator': creator['name'],
+                                    'Platform': account['platform'].title(),
+                                    'Has Demographics': '❌ No',
+                                    'Data Source': 'N/A',
+                                    'Snapshot Date': 'N/A',
+                                    'Data Confidence': 'N/A',
+                                    'Has Gender': '✗',
+                                    'Has Age': '✗',
+                                    'Has Geography': '✗'
+                                })
+
+                    # Summary stats
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Total Social Accounts", total_accounts)
+                    with col2:
+                        st.metric("Accounts with Demographics", accounts_with_demographics)
+                    with col3:
+                        coverage = (accounts_with_demographics / total_accounts * 100) if total_accounts > 0 else 0
+                        st.metric("Coverage", f"{coverage:.1f}%")
+
+                    # Detailed table
+                    if demographics_details:
+                        st.dataframe(pd.DataFrame(demographics_details), width="stretch", hide_index=True)
+
+                    # Recommendations
+                    st.markdown("### 💡 Recommendations")
+                    if coverage < 10:
+                        st.error("⚠️ Very low demographics coverage. Make sure to use the 'Deep Research' analysis tier when analyzing creators.")
+                    elif coverage < 50:
+                        st.warning("⚠️ Low demographics coverage. Consider re-analyzing creators with the 'Deep Research' tier.")
+                    elif coverage < 80:
+                        st.info("📊 Moderate demographics coverage. Some creators are missing demographic data.")
+                    else:
+                        st.success("✅ Good demographics coverage!")
+
+                    st.markdown("""
+                    **How to fix missing demographics:**
+                    1. Use the **Deep Research** analysis tier (not Quick, Standard, or Comprehensive)
+                    2. Ensure your Gemini API key is properly configured
+                    3. Check the terminal logs for any API errors
+                    4. Demographics data is cached for 90 days by default
+                    """)
+
+                    # Add manual demographics fetch option
+                    st.markdown("---")
+                    st.markdown("### 🔄 Manual Demographics Fetch")
+                    st.markdown("Fetch demographics data for a specific creator (takes 5-30 minutes)")
+
+                    # Select creator
+                    creator_options = {row['name']: row['id'] for _, row in creators.iterrows()}
+                    selected_creator = st.selectbox(
+                        "Select creator to fetch demographics:",
+                        options=list(creator_options.keys()),
+                        key="demographics_fetch_creator"
+                    )
+
+                    # Use a unique key for the button to avoid conflicts
+                    fetch_clicked = st.button(
+                        "🚀 Fetch Demographics Now",
+                        key="fetch_demographics_button",
+                        help="This will start a Deep Research job (may take 5-30 minutes)"
+                    )
+
+                    if fetch_clicked:
+                        selected_creator_id = creator_options[selected_creator]
+
+                        st.info(f"⏳ Starting demographics fetch for {selected_creator}...")
+                        st.markdown("**Note:** This may take 5-30 minutes depending on Deep Research. Check the terminal for progress logs.")
+
+                        # Add a separator to see the fetch logs clearly
+                        print("\n" + "=" * 80)
+                        print("MANUAL DEMOGRAPHICS FETCH TRIGGERED FROM UI")
+                        print("=" * 80)
+
+                        try:
+                            from creator_analyzer import CreatorAnalyzer
+
+                            # Get Gemini API key from settings
+                            gemini_api_key = db.get_setting(user_id, "api_key", default="")
+                            if not gemini_api_key:
+                                gemini_api_key = db.get_setting(user_id, "gemini_api_key", default="")
+                            if not gemini_api_key:
+                                gemini_api_key = db.get_setting(user_id, "google_api_key", default="")
+
+                            if not gemini_api_key:
+                                st.error("❌ Gemini API key not configured. Please add your API key in Settings first.")
+                            else:
+                                analyzer = CreatorAnalyzer(gemini_api_key)
+
+                                # Run in a progress container
+                                with st.spinner("Fetching demographics via Deep Research..."):
+                                    results = analyzer.fetch_demographics_for_creator(
+                                        creator_id=selected_creator_id,
+                                        analysis_depth="deep_research"
+                                    )
+
+                                # Show results
+                                success_count = sum(1 for v in results.values() if v)
+                                total_count = len(results)
+
+                                if success_count > 0:
+                                    st.success(f"✅ Demographics fetched for {success_count}/{total_count} platforms")
+                                    for platform, success in results.items():
+                                        if success:
+                                            st.write(f"  ✅ {platform}")
+                                        else:
+                                            st.write(f"  ❌ {platform}")
+
+                                    st.info("🔄 Refresh the page to see updated demographics in reports")
+                                else:
+                                    st.error("❌ Failed to fetch demographics for any platform")
+                                    st.markdown("Check the terminal logs for detailed error information")
+
+                        except Exception as e:
+                            st.error(f"❌ Error: {type(e).__name__}: {e}")
+                            st.markdown("Check the terminal logs for detailed error information")
+                            import traceback
+                            print("\n[ERROR] Exception during demographics fetch:")
+                            traceback.print_exc()
+
+        else:
+            st.caption("Demographics debug is off")
+
     with st.expander("YouTube Configuration (Optional)", expanded=False):
         st.markdown("Add YouTube Data API v3 keys to enable creator analysis on YouTube.")
         st.caption("Get your API key from [Google Cloud Console](https://console.cloud.google.com/apis/credentials)")
@@ -1655,6 +1835,21 @@ with tab_reports:
                 Run an analysis in the Analysis tab to generate reports.
                 """)
             else:
+                # Add checkbox for deduplication
+                show_only_latest = st.checkbox(
+                    "Show only most recent report per creator",
+                    value=True,
+                    key="show_only_latest_reports",
+                    help="When enabled, only the most recent report for each creator is shown. Turn off to see all historical reports."
+                )
+
+                # Filter to most recent per creator if checkbox is enabled
+                if show_only_latest:
+                    # Sort by generated_at descending to get most recent first
+                    reports_df = reports_df.sort_values('generated_at', ascending=False)
+                    # Keep only the first (most recent) report for each creator_id
+                    reports_df = reports_df.drop_duplicates(subset='creator_id', keep='first')
+
                 st.success(f"✓ {len(reports_df)} report(s) available")
 
                 # Sort by overall score (descending)
@@ -1792,7 +1987,7 @@ with tab_reports:
                             # Get latest analytics
                             analytics = db.get_latest_analytics(account['id'])
                             if analytics:
-                                followers = analytics.get('followers_count', 0)
+                                followers = analytics.get('followers_count', 0) or 0
                                 total_reach += followers
 
                                 platform = account['platform']

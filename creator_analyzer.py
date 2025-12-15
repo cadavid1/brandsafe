@@ -5,7 +5,7 @@ Coordinates multi-platform data fetching, analysis, and report generation
 
 import json
 from typing import Dict, List, Optional, Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from storage import get_db
 from platform_clients import get_platform_client, PlatformClientError
@@ -19,6 +19,36 @@ from config import (
     DEFAULT_MODEL,
     VIDEO_DOWNLOAD_PATH
 )
+
+
+def _debug_log_demographics(message: str, enabled: bool = None):
+    """
+    Print debug message for demographics tracking
+
+    Args:
+        message: Debug message to print
+        enabled: Override for debug state (if None, checks database)
+    """
+    if enabled is None:
+        try:
+            db = get_db()
+            # Try to get user_id from session state if available
+            try:
+                import streamlit as st
+                if hasattr(st, 'session_state') and 'user_id' in st.session_state:
+                    user_id = st.session_state.user_id
+                else:
+                    user_id = 1
+            except:
+                user_id = 1
+
+            enabled = db.get_setting(user_id, "demographics_debug", "false") == "true"
+        except:
+            return
+
+    if enabled:
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        print(f"[{timestamp}] [DEMOGRAPHICS] {message}")
 
 
 class CreatorAnalysisError(Exception):
@@ -48,6 +78,7 @@ class CreatorAnalyzer:
         self.youtube_api_keys = youtube_api_keys or []
         self.db = get_db()
         self._last_token_usage = None
+        self._demographics_debug = False  # Will be set based on user settings
         self._deep_research_cost = 0.0
 
     def analyze_creator(
@@ -231,20 +262,33 @@ class CreatorAnalyzer:
                         for post in posts:
                             self.db.save_post_analysis(account_id, post)
 
-                    # Fetch demographics data if Deep Research is enabled
-                    if tier_config.get('deep_research', False):
-                        demographics = self._get_demographics_data(
-                            creator_name=creator['name'],
-                            social_account_id=account_id,
-                            platform=platform,
-                            profile_url=profile_url,
-                            tier_config=tier_config
-                        )
+                        # Calculate engagement rate from posts
+                        if posts and stats.get('followers_count', 0) > 0:
+                            total_engagement = 0
+                            valid_posts = 0
+                            for post in posts:
+                                likes = post.get('likes', 0) or post.get('likes_count', 0) or 0
+                                comments = post.get('comments', 0) or post.get('comments_count', 0) or 0
+                                if likes > 0 or comments > 0:
+                                    total_engagement += likes + comments
+                                    valid_posts += 1
 
+                            if valid_posts > 0:
+                                avg_engagement_per_post = total_engagement / valid_posts
+                                engagement_rate = (avg_engagement_per_post / stats['followers_count']) * 100
+
+                                # Update the analytics with calculated engagement rate
+                                self.db.update_analytics_engagement_rate(account_id, engagement_rate)
+                                print(f"  [INFO] Calculated engagement rate: {engagement_rate:.2f}%")
+
+                    # Check for cached demographics (used in reports)
+                    if tier_config.get('deep_research', False):
+                        demographics = self.db.get_demographics_data(account_id)
                         if demographics:
-                            # Add demographics to platform stats for reporting
                             platform_stats[platform]['demographics'] = demographics
-                            print(f"  [SUCCESS] Demographics data added to {platform} stats")
+                            print(f"  [INFO] Using cached demographics data")
+                        else:
+                            print(f"  [INFO] No cached demographics - will fetch after report is saved")
 
                 except PlatformClientError as e:
                     print(f"  [ERROR] Failed to fetch {platform} data: {e}")
@@ -319,6 +363,7 @@ class CreatorAnalyzer:
             # Step 7: Save report
             report_data = {
                 'overall_score': overall_metrics.get('brand_fit_score', 5.0),
+                'natural_alignment_score': overall_metrics.get('natural_alignment_score', 3.0),
                 'summary': summary,
                 'strengths': overall_metrics.get('strengths', []),
                 'concerns': overall_metrics.get('concerns', []),
@@ -340,6 +385,33 @@ class CreatorAnalyzer:
             print(f"  Overall Score: {overall_metrics.get('brand_fit_score', 'N/A')}/5.0")
             print(f"  Analysis Cost: ${overall_metrics.get('analysis_cost', 0.0):.4f}")
             print(f"{'='*60}\n")
+
+            # Fetch demographics if Deep Research tier (after report is saved)
+            if tier_config.get('deep_research', False):
+                print(f"\n[DEMOGRAPHICS] Deep Research tier detected - fetching demographics...")
+                print(f"[INFO] This may take 5-30 minutes. Report is already saved and available.")
+                print(f"[INFO] Demographics will be added when fetch completes.\n")
+
+                try:
+                    demo_results = self.fetch_demographics_for_creator(
+                        creator_id=creator_id,
+                        analysis_depth=analysis_depth
+                    )
+
+                    # Count successes
+                    success_count = sum(1 for v in demo_results.values() if v)
+                    total_count = len(demo_results)
+
+                    if success_count > 0:
+                        print(f"\n[DEMOGRAPHICS] Successfully fetched for {success_count}/{total_count} platforms")
+                        print(f"[INFO] Demographics cached for 90 days")
+                    else:
+                        print(f"\n[DEMOGRAPHICS] Failed to fetch demographics for any platform")
+                        print(f"[INFO] Check logs above for errors")
+
+                except Exception as e:
+                    print(f"\n[DEMOGRAPHICS] Error during fetch: {type(e).__name__}: {e}")
+                    print(f"[INFO] Report is still valid, demographics can be fetched later via Settings")
 
             return {
                 'success': True,
@@ -661,100 +733,147 @@ Focus on visual elements, tone, and overall presentation quality."""
         Returns:
             Demographics dictionary or None
         """
+        _debug_log_demographics(f"=== Starting demographics fetch for {creator_name} ({platform}) ===")
+        _debug_log_demographics(f"Social account ID: {social_account_id}")
+        _debug_log_demographics(f"Profile URL: {profile_url}")
+        _debug_log_demographics(f"Tier config: {tier_config.get('name', 'Unknown')}")
+
         # Check if Deep Research is enabled for this tier
         if not tier_config.get('deep_research', False):
+            _debug_log_demographics("❌ Deep Research not enabled for this tier")
             print(f"  [SKIP] Deep Research not enabled for this tier")
             return None
 
+        _debug_log_demographics("✓ Deep Research is enabled")
+
         # Check if demographics query is requested
         deep_research_queries = tier_config.get('deep_research_queries', [])
+        _debug_log_demographics(f"Deep research queries: {deep_research_queries}")
+
         if 'demographics' not in deep_research_queries:
+            _debug_log_demographics("❌ 'demographics' not in deep_research_queries list")
             print(f"  [SKIP] Demographics research not requested")
             return None
 
+        _debug_log_demographics("✓ Demographics query is requested")
+
         # First, check if we have cached demographics
         print(f"  [DEMOGRAPHICS] Checking cache for {platform} account...")
-        demographics = self.db.get_demographics_data(social_account_id)
+        _debug_log_demographics(f"Checking DB for cached demographics (account_id={social_account_id})...")
 
-        if demographics:
-            # Check if data is still fresh (within cache period)
-            cache_days = tier_config.get('deep_research_cache_days', 90)
-            from datetime import timedelta
-            snapshot_date_str = demographics.get('snapshot_date')
+        try:
+            demographics = self.db.get_demographics_data(social_account_id)
+            _debug_log_demographics(f"DB query result: {'Found data' if demographics else 'No data found'}")
 
-            if snapshot_date_str:
-                try:
-                    snapshot_date = datetime.fromisoformat(snapshot_date_str)
-                    age_days = (datetime.now() - snapshot_date).days
+            if demographics:
+                _debug_log_demographics(f"Cached data keys: {list(demographics.keys())}")
+                # Check if data is still fresh (within cache period)
+                cache_days = tier_config.get('deep_research_cache_days', 90)
+                snapshot_date_str = demographics.get('snapshot_date')
+                _debug_log_demographics(f"Snapshot date: {snapshot_date_str}, Cache limit: {cache_days} days")
 
-                    if age_days < cache_days:
-                        print(f"  [CACHE HIT] Using cached demographics ({age_days} days old)")
-                        return demographics
-                    else:
-                        print(f"  [CACHE EXPIRED] Demographics data is {age_days} days old (limit: {cache_days})")
-                except:
-                    pass
+                if snapshot_date_str:
+                    try:
+                        snapshot_date = datetime.fromisoformat(snapshot_date_str)
+                        age_days = (datetime.now() - snapshot_date).days
+
+                        if age_days < cache_days:
+                            _debug_log_demographics(f"✓ Cache is fresh ({age_days} days old, limit: {cache_days})")
+                            print(f"  [CACHE HIT] Using cached demographics ({age_days} days old)")
+                            return demographics
+                        else:
+                            _debug_log_demographics(f"❌ Cache expired ({age_days} days old, limit: {cache_days})")
+                            print(f"  [CACHE EXPIRED] Demographics data is {age_days} days old (limit: {cache_days})")
+                    except Exception as e:
+                        _debug_log_demographics(f"❌ Error parsing snapshot date: {e}")
+                else:
+                    _debug_log_demographics("⚠️ No snapshot_date in cached data, treating as expired")
+            else:
+                _debug_log_demographics("No cached demographics found in database")
+        except Exception as e:
+            _debug_log_demographics(f"❌ ERROR checking cache: {e}")
+            print(f"  [ERROR] Failed to check demographics cache: {e}")
 
         # No cache or expired, use Deep Research
         print(f"  [DEEP RESEARCH] Fetching demographics for {creator_name} on {platform}...")
+        _debug_log_demographics(f"Initiating Deep Research API call...")
 
         try:
             # Generate query hash for deduplication
             query_text = f"demographics_{creator_name}_{platform}_{profile_url}"
             query_hash = DeepResearchClient.generate_query_hash(query_text)
+            _debug_log_demographics(f"Query hash: {query_hash}")
 
             # Check if we have this exact query cached
+            _debug_log_demographics("Checking Deep Research query cache...")
             cached_query = self.db.get_cached_deep_research(query_hash)
+
             if cached_query:
+                _debug_log_demographics(f"✓ Found cached Deep Research query")
                 print(f"  [CACHE HIT] Found cached Deep Research query")
                 demographics_result = cached_query['result_data']
                 self._deep_research_cost += cached_query['cost']
+                _debug_log_demographics(f"Result keys: {list(demographics_result.keys()) if isinstance(demographics_result, dict) else 'Not a dict'}")
             else:
+                _debug_log_demographics("No cached query found, calling Deep Research API...")
                 # Perform Deep Research
-                result = self.deep_research_client.research_creator_demographics(
-                    creator_name=creator_name,
-                    platform=platform,
-                    profile_url=profile_url,
-                    timeout=1800  # 30 minutes max
-                )
+                try:
+                    result = self.deep_research_client.research_creator_demographics(
+                        creator_name=creator_name,
+                        platform=platform,
+                        profile_url=profile_url,
+                        timeout=1800  # 30 minutes max
+                    )
+                    _debug_log_demographics(f"Deep Research API returned status: {result.get('status', 'unknown')}")
 
-                if result['status'] != 'completed':
-                    print(f"  [ERROR] Deep Research failed")
-                    return None
+                    if result['status'] != 'completed':
+                        _debug_log_demographics(f"❌ Deep Research failed with status: {result['status']}")
+                        _debug_log_demographics(f"Result data: {result}")
+                        print(f"  [ERROR] Deep Research failed with status: {result['status']}")
+                        return None
 
-                demographics_result = result['result']
+                    demographics_result = result['result']
+                    _debug_log_demographics(f"✓ Deep Research completed successfully")
+                    _debug_log_demographics(f"Result keys: {list(demographics_result.keys()) if isinstance(demographics_result, dict) else 'Not a dict'}")
 
-                # Calculate cost
-                cost = DeepResearchClient.calculate_cost(
-                    result['input_tokens'],
-                    result['output_tokens']
-                )
-                self._deep_research_cost += cost
+                    # Calculate cost
+                    cost = DeepResearchClient.calculate_cost(
+                        result['input_tokens'],
+                        result['output_tokens']
+                    )
+                    self._deep_research_cost += cost
+                    _debug_log_demographics(f"Cost: ${cost:.4f}, Tokens: {result['input_tokens']} in / {result['output_tokens']} out")
 
-                print(f"  [SUCCESS] Demographics research completed (cost: ${cost:.4f})")
+                    print(f"  [SUCCESS] Demographics research completed (cost: ${cost:.4f})")
 
-                # Save to database cache
-                cache_expiration = datetime.now() + timedelta(days=tier_config.get('deep_research_cache_days', 90))
+                    # Save to database cache
+                    cache_expiration = datetime.now() + timedelta(days=tier_config.get('deep_research_cache_days', 90))
 
-                query_data = {
-                    'query_hash': query_hash,
-                    'query_text': query_text,
-                    'query_type': 'demographics',
-                    'creator_id': None,  # Will be set by caller if available
-                    'social_account_id': social_account_id,
-                    'interaction_id': result.get('interaction_id', ''),
-                    'status': 'completed',
-                    'result_data': demographics_result,
-                    'citations': demographics_result.get('sources', []),
-                    'cost': cost,
-                    'input_tokens': result['input_tokens'],
-                    'output_tokens': result['output_tokens'],
-                    'expires_at': cache_expiration.isoformat()
-                }
+                    query_data = {
+                        'query_hash': query_hash,
+                        'query_text': query_text,
+                        'query_type': 'demographics',
+                        'creator_id': None,  # Will be set by caller if available
+                        'social_account_id': social_account_id,
+                        'interaction_id': result.get('interaction_id', ''),
+                        'status': 'completed',
+                        'result_data': demographics_result,
+                        'citations': demographics_result.get('sources', []),
+                        'cost': cost,
+                        'input_tokens': result['input_tokens'],
+                        'output_tokens': result['output_tokens'],
+                        'expires_at': cache_expiration.isoformat()
+                    }
 
-                self.db.save_deep_research_query(query_data)
+                    _debug_log_demographics("Saving Deep Research query to cache...")
+                    self.db.save_deep_research_query(query_data)
+                    _debug_log_demographics("✓ Query cache saved")
+                except Exception as api_error:
+                    _debug_log_demographics(f"❌ Deep Research API call failed: {type(api_error).__name__}: {api_error}")
+                    raise
 
             # Save demographics to platform_analytics
+            _debug_log_demographics("Preparing demographics data for saving...")
             demographics_data = {
                 'gender': demographics_result.get('gender', {}),
                 'age_brackets': demographics_result.get('age_brackets', {}),
@@ -766,17 +885,104 @@ Focus on visual elements, tone, and overall presentation quality."""
                 'collected_at': datetime.now().isoformat(),
                 'expires_at': (datetime.now() + timedelta(days=tier_config.get('deep_research_cache_days', 90))).isoformat()
             }
+            _debug_log_demographics(f"Demographics data structure: {json.dumps({k: (len(v) if isinstance(v, (list, dict)) else v) for k, v in demographics_data.items()}, indent=2)}")
 
-            self.db.save_demographics_data(social_account_id, demographics_data)
+            _debug_log_demographics(f"Saving demographics to platform_analytics for account_id={social_account_id}...")
+            try:
+                self.db.save_demographics_data(social_account_id, demographics_data)
+                _debug_log_demographics("✓ Demographics saved to database")
 
+                # Verify save worked
+                verification = self.db.get_demographics_data(social_account_id)
+                if verification:
+                    _debug_log_demographics(f"✓ VERIFICATION: Successfully retrieved saved demographics")
+                    _debug_log_demographics(f"Verification keys: {list(verification.keys())}")
+                else:
+                    _debug_log_demographics(f"❌ VERIFICATION FAILED: Could not retrieve saved demographics!")
+            except Exception as save_error:
+                _debug_log_demographics(f"❌ ERROR saving demographics: {type(save_error).__name__}: {save_error}")
+                raise
+
+            _debug_log_demographics(f"=== Demographics fetch completed successfully ===")
             return demographics_data
 
         except DeepResearchError as e:
+            _debug_log_demographics(f"❌ DeepResearchError: {e}")
             print(f"  [ERROR] Deep Research failed: {e}")
             return None
         except Exception as e:
+            _debug_log_demographics(f"❌ Unexpected error: {type(e).__name__}: {e}")
+            _debug_log_demographics(f"Traceback: {e.__traceback__}")
             print(f"  [ERROR] Demographics fetch failed: {e}")
             return None
+
+    def fetch_demographics_for_creator(self, creator_id: int, analysis_depth: str = "deep_research") -> Dict[str, bool]:
+        """
+        Fetch demographics data for all platforms of a creator (separate from main analysis)
+
+        This is designed to run separately/asynchronously to avoid blocking the main analysis.
+        Returns a dict mapping platform names to success status.
+
+        Args:
+            creator_id: Creator ID
+            analysis_depth: Analysis tier (must have deep_research enabled)
+
+        Returns:
+            Dict with platform names as keys and success boolean as values
+        """
+        results = {}
+
+        # Get tier config
+        tier_config = ANALYSIS_TIERS.get(analysis_depth)
+        if not tier_config or not tier_config.get('deep_research', False):
+            print(f"[DEMOGRAPHICS] Tier '{analysis_depth}' does not support demographics")
+            return results
+
+        # Get creator info
+        creator = self.db.get_creator(creator_id)
+        if not creator:
+            print(f"[DEMOGRAPHICS] Creator {creator_id} not found")
+            return results
+
+        print(f"\n[DEMOGRAPHICS FETCH] Starting for {creator['name']}")
+        print("=" * 60)
+
+        # Get social accounts
+        accounts = self.db.get_social_accounts(creator_id)
+
+        for _, account in accounts.iterrows():
+            platform = account['platform']
+            account_id = account['id']
+            profile_url = account['profile_url']
+
+            print(f"\n[PLATFORM] {platform.upper()}")
+
+            try:
+                demographics = self._get_demographics_data(
+                    creator_name=creator['name'],
+                    social_account_id=account_id,
+                    platform=platform,
+                    profile_url=profile_url,
+                    tier_config=tier_config
+                )
+
+                if demographics:
+                    results[platform] = True
+                    print(f"  [SUCCESS] Demographics fetched for {platform}")
+                else:
+                    results[platform] = False
+                    print(f"  [FAILED] No demographics data for {platform}")
+
+            except Exception as e:
+                results[platform] = False
+                print(f"  [ERROR] Failed to fetch {platform} demographics: {e}")
+
+        print("\n" + "=" * 60)
+        print(f"[DEMOGRAPHICS FETCH] Completed for {creator['name']}")
+        success_count = sum(1 for v in results.values() if v)
+        print(f"  Success: {success_count}/{len(results)} platforms")
+
+        return results
 
     def _calculate_overall_metrics(
         self,
@@ -802,16 +1008,18 @@ Focus on visual elements, tone, and overall presentation quality."""
             for stats in platform_stats.values()
         )
 
-        # Get brand safety score from content analysis
+        # Get scores from content analysis
         brand_safety = content_analysis.get('brand_safety_score', 3.0)
         authenticity = content_analysis.get('authenticity_score', 3.0)
+        natural_alignment = content_analysis.get('natural_alignment_score', 3.0)
 
         # Calculate brand fit score (1-5 scale)
         # Weighted average of different factors
         brand_fit_score = (
-            (brand_safety * 0.4) +  # 40% weight on brand safety
-            (authenticity * 0.3) +  # 30% weight on authenticity
-            (min(5, total_followers / 100000) * 0.3)  # 30% weight on reach (scaled)
+            (brand_safety * 0.3) +  # 30% weight on brand safety
+            (authenticity * 0.25) +  # 25% weight on authenticity
+            (natural_alignment * 0.25) +  # 25% weight on natural alignment
+            (min(5, total_followers / 100000) * 0.2)  # 20% weight on reach (scaled)
         )
 
         # Identify strengths
@@ -820,13 +1028,25 @@ Focus on visual elements, tone, and overall presentation quality."""
             strengths.append(f"Large reach: {total_followers:,} total followers")
         if brand_safety >= 4:
             strengths.append("High brand safety score")
+        if natural_alignment >= 4:
+            strengths.append("Strong natural alignment - creator already discusses related topics/brands")
         if len(platform_stats) > 2:
             strengths.append(f"Multi-platform presence ({len(platform_stats)} platforms)")
+
+        # Add brand mention insights if available
+        brand_mentions = content_analysis.get('brand_mentions', {})
+        if brand_mentions:
+            if brand_mentions.get('direct_brand_mentions', 0) > 0:
+                strengths.append(f"Already mentions brand organically ({brand_mentions['direct_brand_mentions']} times)")
+            if brand_mentions.get('competitor_mentions', 0) > 0:
+                strengths.append(f"Discusses competitors/similar products ({brand_mentions['competitor_mentions']} mentions)")
 
         # Identify concerns
         concerns = content_analysis.get('potential_concerns', [])
         if brand_safety < 3:
             concerns.append("Brand safety concerns detected")
+        if natural_alignment < 3:
+            concerns.append("Limited natural alignment - creator doesn't naturally discuss related topics")
         if total_followers < 10000:
             concerns.append("Limited reach")
 
@@ -887,6 +1107,7 @@ Focus on visual elements, tone, and overall presentation quality."""
             'total_followers': total_followers,
             'brand_safety_score': brand_safety,
             'authenticity_score': authenticity,
+            'natural_alignment_score': natural_alignment,
             'strengths': strengths,
             'concerns': concerns,
             'recommendations': recommendations,
@@ -919,16 +1140,26 @@ Focus on visual elements, tone, and overall presentation quality."""
         fit_score = overall_metrics['brand_fit_score']
         themes = ', '.join(content_analysis.get('content_themes', [])[:3])
 
+        natural_alignment = content_analysis.get('natural_alignment_score', 'N/A')
+        brand_mentions = content_analysis.get('brand_mentions', {})
+
+        alignment_note = ""
+        if natural_alignment != 'N/A' and natural_alignment >= 4:
+            mention_examples = brand_mentions.get('mention_examples', [])
+            if mention_examples:
+                alignment_note = f"\n\nNatural Alignment Highlights: {', '.join(mention_examples[:3])}"
+
         summary = f"""{creator_name} is a creator active on {platforms} with a total reach of {followers:,} followers.
 
 Primary Content: {themes or 'Various topics'}
 
-Brand Fit Score: {fit_score}/10
+Brand Fit Score: {fit_score}/5
 
 Brand Safety: {content_analysis.get('brand_safety_score', 'N/A')}/5
 Authenticity: {content_analysis.get('authenticity_score', 'N/A')}/5
-Engagement Quality: {content_analysis.get('audience_engagement_quality', 'N/A')}
+Natural Alignment: {natural_alignment}/5
+Engagement Quality: {content_analysis.get('audience_engagement_quality', 'N/A')}{alignment_note}
 
-This creator {'is a strong candidate' if fit_score >= 7 else 'shows moderate potential' if fit_score >= 5 else 'may not be the best fit'} for partnerships aligned with: {brand_context[:200]}..."""
+This creator {'is a strong candidate' if fit_score >= 4.0 else 'shows moderate potential' if fit_score >= 3.0 else 'may not be the best fit'} for partnerships aligned with: {brand_context[:200]}..."""
 
         return summary

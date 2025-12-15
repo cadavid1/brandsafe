@@ -90,8 +90,8 @@ class ComparisonEngine:
             # Get latest analytics
             analytics = self.db.get_latest_analytics(account['id'])
             if analytics:
-                followers = analytics.get('followers_count', 0)
-                posts = analytics.get('total_posts', 0)
+                followers = analytics.get('followers_count', 0) or 0
+                posts = analytics.get('total_posts', 0) or 0
                 total_followers += followers
                 total_posts += posts
 
@@ -107,8 +107,8 @@ class ComparisonEngine:
         avg_engagement_rate = sum(engagement_rates) / len(engagement_rates) if engagement_rates else 0
 
         # Build comparison data
-        # Note: For now using overall_score for all metrics until detailed scores are implemented
         overall_score = report.get('overall_score', 0) if report else 0
+        natural_alignment_score = report.get('natural_alignment_score', 0) if report else 0
 
         data = {
             'id': creator_id,
@@ -119,10 +119,11 @@ class ComparisonEngine:
             'total_posts': total_posts,
             'avg_engagement_rate': avg_engagement_rate,
             'overall_score': overall_score,
-            'brand_safety_score': overall_score,  # TODO: Add to DB schema
-            'content_quality_score': overall_score,  # TODO: Add to DB schema
-            'audience_fit_score': overall_score,  # TODO: Add to DB schema
-            'engagement_quality_score': overall_score,  # TODO: Add to DB schema
+            'natural_alignment_score': natural_alignment_score,
+            'brand_safety_score': overall_score,  # TODO: Extract from content analysis
+            'content_quality_score': overall_score,  # TODO: Extract from content analysis
+            'audience_fit_score': overall_score,  # TODO: Extract from content analysis
+            'engagement_quality_score': overall_score,  # TODO: Extract from content analysis
             'estimated_cost': 0,  # TODO: Add cost estimation logic
         }
 
@@ -145,6 +146,7 @@ class ComparisonEngine:
 
         rankings = {
             'overall_score': self._rank_column(df, 'overall_score', ascending=False),
+            'natural_alignment_score': self._rank_column(df, 'natural_alignment_score', ascending=False),
             'total_followers': self._rank_column(df, 'total_followers', ascending=False),
             'avg_engagement_rate': self._rank_column(df, 'avg_engagement_rate', ascending=False),
             'brand_safety_score': self._rank_column(df, 'brand_safety_score', ascending=False),
@@ -209,6 +211,7 @@ class ComparisonEngine:
             'avg_followers': int(df['total_followers'].mean()),
             'avg_engagement_rate': float(df['avg_engagement_rate'].mean()),
             'avg_overall_score': float(df['overall_score'].mean()),
+            'avg_natural_alignment': float(df['natural_alignment_score'].mean()),
             'avg_brand_safety': float(df['brand_safety_score'].mean()),
             'total_estimated_cost': float(df['estimated_cost'].sum()),
             'platforms_covered': len(set([p for creator in creators for p in creator['platforms']])),
@@ -304,6 +307,7 @@ class ComparisonEngine:
 
         top_performers = {
             'by_score': df.nlargest(top_n, 'overall_score')[['name', 'overall_score']].to_dict('records'),
+            'by_natural_alignment': df.nlargest(top_n, 'natural_alignment_score')[['name', 'natural_alignment_score']].to_dict('records'),
             'by_reach': df.nlargest(top_n, 'total_followers')[['name', 'total_followers']].to_dict('records'),
             'by_engagement': df.nlargest(top_n, 'avg_engagement_rate')[['name', 'avg_engagement_rate']].to_dict('records'),
         }

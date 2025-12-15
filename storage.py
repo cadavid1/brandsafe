@@ -218,6 +218,7 @@ class DatabaseManager:
                 sentiment_score REAL,
                 content_themes TEXT,
                 brand_safety_score REAL,
+                natural_alignment_score REAL,
                 analyzed_at TIMESTAMP,
                 FOREIGN KEY (social_account_id) REFERENCES social_accounts(id) ON DELETE CASCADE
             )
@@ -244,6 +245,7 @@ class DatabaseManager:
                 brief_id INTEGER NOT NULL,
                 creator_id INTEGER NOT NULL,
                 overall_score REAL,
+                natural_alignment_score REAL,
                 summary TEXT,
                 strengths TEXT,
                 concerns TEXT,
@@ -315,6 +317,7 @@ class DatabaseManager:
         self._migrate_email_optional(cursor)
         self._migrate_creator_reports_table(cursor)
         self._fix_brief_creators_data_types(cursor)
+        self._migrate_natural_alignment_columns(cursor)
 
         conn.commit()
         conn.close()
@@ -512,6 +515,28 @@ class DatabaseManager:
                 print("brief_creators table data fix complete!")
         except Exception as e:
             print(f"brief_creators data fix warning: {e}")
+
+    def _migrate_natural_alignment_columns(self, cursor):
+        """Add natural_alignment_score columns to post_analysis and creator_reports tables"""
+        try:
+            # Check post_analysis table
+            cursor.execute("PRAGMA table_info(post_analysis)")
+            post_columns = {row[1] for row in cursor.fetchall()}
+
+            if 'natural_alignment_score' not in post_columns:
+                cursor.execute("ALTER TABLE post_analysis ADD COLUMN natural_alignment_score REAL")
+                print("Added column: natural_alignment_score to post_analysis")
+
+            # Check creator_reports table
+            cursor.execute("PRAGMA table_info(creator_reports)")
+            report_columns = {row[1] for row in cursor.fetchall()}
+
+            if 'natural_alignment_score' not in report_columns:
+                cursor.execute("ALTER TABLE creator_reports ADD COLUMN natural_alignment_score REAL")
+                print("Added column: natural_alignment_score to creator_reports")
+
+        except Exception as e:
+            print(f"Natural alignment migration warning: {e}")
 
     # === User Management ===
 
@@ -1435,6 +1460,9 @@ class DatabaseManager:
     def get_creator(self, creator_id: int) -> Optional[Dict]:
         """Get a specific creator by ID"""
         try:
+            # Convert numpy types to native Python int (pandas DataFrames return numpy.int64)
+            creator_id = int(creator_id)
+
             conn = self._get_connection()
             cursor = conn.cursor()
 
@@ -1460,7 +1488,9 @@ class DatabaseManager:
                 }
             return None
         except Exception as e:
-            print(f"Error getting creator: {e}")
+            print(f"[ERROR] Error getting creator {creator_id}: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
             return None
 
     def get_creators_for_brief(self, brief_id: int) -> pd.DataFrame:
@@ -1515,6 +1545,9 @@ class DatabaseManager:
 
     def get_social_accounts(self, creator_id: int) -> pd.DataFrame:
         """Get all social accounts for a creator"""
+        # Convert numpy types to native Python int
+        creator_id = int(creator_id)
+
         conn = self._get_connection()
         df = pd.read_sql_query("""
             SELECT id, platform, platform_user_id, handle, profile_url,
@@ -1578,6 +1611,30 @@ class DatabaseManager:
         except Exception as e:
             print(f"Error saving platform analytics: {e}")
             return -1
+
+    def update_analytics_engagement_rate(self, social_account_id: int, engagement_rate: float) -> bool:
+        """Update the engagement rate for the most recent analytics entry"""
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                UPDATE platform_analytics
+                SET engagement_rate = ?
+                WHERE social_account_id = ?
+                AND snapshot_date = (
+                    SELECT MAX(snapshot_date)
+                    FROM platform_analytics
+                    WHERE social_account_id = ?
+                )
+            """, (engagement_rate, social_account_id, social_account_id))
+
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            print(f"Error updating engagement rate: {e}")
+            return False
 
     def get_latest_analytics(self, social_account_id: int) -> Optional[Dict]:
         """Get the most recent analytics snapshot for a social account"""
@@ -1676,13 +1733,14 @@ class DatabaseManager:
 
             cursor.execute("""
                 INSERT INTO creator_reports
-                (brief_id, creator_id, overall_score, summary, strengths, concerns,
+                (brief_id, creator_id, overall_score, natural_alignment_score, summary, strengths, concerns,
                  recommendations, analysis_cost, model_used, video_insights)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 brief_id,
                 creator_id,
                 report_data.get('overall_score', 0.0),
+                report_data.get('natural_alignment_score', 0.0),
                 report_data.get('summary', ''),
                 json.dumps(report_data.get('strengths', [])),
                 json.dumps(report_data.get('concerns', [])),
@@ -1722,6 +1780,7 @@ class DatabaseManager:
                     'brief_id': row['brief_id'],
                     'creator_id': row['creator_id'],
                     'overall_score': row['overall_score'],
+                    'natural_alignment_score': row['natural_alignment_score'],
                     'summary': row['summary'],
                     'strengths': json.loads(row['strengths']) if row['strengths'] else [],
                     'concerns': json.loads(row['concerns']) if row['concerns'] else [],
@@ -1798,8 +1857,8 @@ class DatabaseManager:
                 INSERT INTO post_analysis
                 (social_account_id, post_id, post_url, post_date, post_type, caption,
                  likes_count, comments_count, shares_count, views_count, duration_seconds,
-                 sentiment_score, content_themes, brand_safety_score)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 sentiment_score, content_themes, brand_safety_score, natural_alignment_score)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 social_account_id,
                 post_data.get('post_id', ''),
@@ -1814,7 +1873,8 @@ class DatabaseManager:
                 post_data.get('duration_seconds', 0.0),
                 post_data.get('sentiment_score', 0.0),
                 json.dumps(post_data.get('content_themes', [])),
-                post_data.get('brand_safety_score', 0.0)
+                post_data.get('brand_safety_score', 0.0),
+                post_data.get('natural_alignment_score', 0.0)
             ))
 
             post_analysis_id = cursor.lastrowid
@@ -1978,35 +2038,43 @@ class DatabaseManager:
             social_account_id: Social account ID
             demographics: Demographics dictionary
         """
-        conn = self._get_connection()
-        cursor = conn.cursor()
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
 
-        # Check if there's an existing analytics record for today
-        cursor.execute("""
-            SELECT id FROM platform_analytics
-            WHERE social_account_id = ?
-            AND snapshot_date = date('now')
-        """, (social_account_id,))
-
-        row = cursor.fetchone()
-
-        if row:
-            # Update existing record
+            # Check if there's an existing analytics record for today
             cursor.execute("""
-                UPDATE platform_analytics
-                SET demographics_data = ?
-                WHERE id = ?
-            """, (json.dumps(demographics), row['id']))
-        else:
-            # Create new record
-            cursor.execute("""
-                INSERT INTO platform_analytics (
-                    social_account_id, snapshot_date, demographics_data, data_source
-                ) VALUES (?, date('now'), ?, 'deep_research')
-            """, (social_account_id, json.dumps(demographics)))
+                SELECT id FROM platform_analytics
+                WHERE social_account_id = ?
+                ORDER BY snapshot_date DESC
+                LIMIT 1
+            """, (social_account_id,))
 
-        conn.commit()
-        conn.close()
+            row = cursor.fetchone()
+            demographics_json = json.dumps(demographics)
+
+            if row:
+                # Update existing record
+                cursor.execute("""
+                    UPDATE platform_analytics
+                    SET demographics_data = ?
+                    WHERE id = ?
+                """, (demographics_json, row['id']))
+                print(f"  [DB] Updated demographics for platform_analytics id={row['id']}")
+            else:
+                # Create new record
+                cursor.execute("""
+                    INSERT INTO platform_analytics (
+                        social_account_id, snapshot_date, demographics_data, data_source
+                    ) VALUES (?, date('now'), ?, 'deep_research')
+                """, (social_account_id, demographics_json))
+                print(f"  [DB] Created new platform_analytics record with demographics for account_id={social_account_id}")
+
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"  [DB ERROR] Failed to save demographics: {type(e).__name__}: {e}")
+            raise
 
     def get_demographics_data(self, social_account_id: int) -> Optional[Dict]:
         """
@@ -2018,29 +2086,39 @@ class DatabaseManager:
         Returns:
             Demographics dictionary or None
         """
-        conn = self._get_connection()
-        cursor = conn.cursor()
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
 
-        cursor.execute("""
-            SELECT demographics_data, snapshot_date
-            FROM platform_analytics
-            WHERE social_account_id = ?
-            AND demographics_data IS NOT NULL
-            ORDER BY snapshot_date DESC
-            LIMIT 1
-        """, (social_account_id,))
+            cursor.execute("""
+                SELECT demographics_data, snapshot_date
+                FROM platform_analytics
+                WHERE social_account_id = ?
+                AND demographics_data IS NOT NULL
+                AND demographics_data != ''
+                AND demographics_data != '{}'
+                ORDER BY snapshot_date DESC
+                LIMIT 1
+            """, (social_account_id,))
 
-        row = cursor.fetchone()
-        conn.close()
+            row = cursor.fetchone()
+            conn.close()
 
-        if row and row['demographics_data']:
-            try:
-                demographics = json.loads(row['demographics_data'])
-                demographics['snapshot_date'] = row['snapshot_date']
-                return demographics
-            except json.JSONDecodeError:
-                return None
-        return None
+            if row and row['demographics_data']:
+                try:
+                    demographics = json.loads(row['demographics_data'])
+                    # Filter out empty demographics
+                    if not demographics or (isinstance(demographics, dict) and not any(demographics.values())):
+                        return None
+                    demographics['snapshot_date'] = row['snapshot_date']
+                    return demographics
+                except json.JSONDecodeError as e:
+                    print(f"  [DB ERROR] Failed to parse demographics JSON: {e}")
+                    return None
+            return None
+        except Exception as e:
+            print(f"  [DB ERROR] Failed to retrieve demographics: {type(e).__name__}: {e}")
+            return None
 
 
 # Singleton instance

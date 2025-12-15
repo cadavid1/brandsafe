@@ -183,7 +183,10 @@ class DeepResearchClient:
         """
         data = {
             'agent': self.agent_id,
-            'input': {'parts': [{'text': query}]},
+            'input': {
+                'type': 'text',
+                'text': query  # Direct text field, no parts array
+            },
             'background': True  # Required for long-running tasks
         }
 
@@ -198,14 +201,25 @@ class DeepResearchClient:
             }
 
         try:
+            # Debug: print the actual data being sent
+            import json as json_module
+            print(f"  [DEBUG] Sending request data: {json_module.dumps(data, indent=2)}")
+
             response = self._make_request('POST', 'interactions', data=data)
             result = response.json()
 
-            # Extract interaction ID from response
-            interaction_id = result.get('name', '').split('/')[-1]
+            # Debug: print the response
+            print(f"  [DEBUG] API Response: {json_module.dumps(result, indent=2)}")
+
+            # Extract interaction ID from response - it's in the 'id' field
+            interaction_id = result.get('id', '')
             if not interaction_id:
+                print(f"  [DEBUG] Failed to extract interaction ID from response")
+                print(f"  [DEBUG] Response keys: {list(result.keys())}")
+                print(f"  [DEBUG] 'id' field value: {result.get('id', 'NOT PRESENT')}")
                 raise DeepResearchError("Failed to get interaction ID from response")
 
+            print(f"  [DEBUG] Extracted interaction ID: {interaction_id}")
             return interaction_id
 
         except Exception as e:
@@ -235,11 +249,10 @@ class DeepResearchClient:
                 response = self._make_request('GET', f'interactions/{interaction_id}')
                 result = response.json()
 
-                # Check status
-                status = result.get('status', {})
-                state = status.get('state', 'UNKNOWN')
+                # Check status - it's a string field, not a dict
+                status = result.get('status', 'unknown')
 
-                if state == 'COMPLETED':
+                if status == 'completed':
                     # Extract result
                     output = result.get('output', {})
                     parts = output.get('parts', [])
@@ -268,24 +281,23 @@ class DeepResearchClient:
                         'total_tokens': usage.get('totalTokenCount', 0)
                     }
 
-                elif state == 'FAILED':
-                    error = status.get('error', {})
-                    error_message = error.get('message', 'Unknown error')
+                elif status == 'failed':
+                    error_msg = result.get('error', 'Unknown error')
                     return {
                         'status': 'failed',
-                        'error': error_message
+                        'error': error_msg
                     }
 
-                elif state in ['PENDING', 'RUNNING']:
+                elif status in ['in_progress', 'pending']:
                     # Still running, wait and retry
-                    print(f"  [DEEP RESEARCH] Status: {state}, elapsed: {int(elapsed)}s")
+                    print(f"  [DEEP RESEARCH] Status: {status}, elapsed: {int(elapsed)}s")
                     time.sleep(poll_interval)
 
                     # Increase poll interval gradually (max 30s)
                     poll_interval = min(poll_interval + 5, 30)
 
                 else:
-                    print(f"  [DEEP RESEARCH] Unknown state: {state}")
+                    print(f"  [DEEP RESEARCH] Unknown status: {status}")
                     time.sleep(poll_interval)
 
             except KeyboardInterrupt:

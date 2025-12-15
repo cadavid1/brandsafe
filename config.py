@@ -253,6 +253,7 @@ Analyze the content for:
 3. **Authenticity**: Genuine vs overly promotional content
 4. **Audience Engagement**: Comment quality, community interaction
 5. **Production Quality**: Content professionalism, consistency
+6. **Natural Alignment**: Does the creator naturally align with the brand? Are they already talking about it, competitors, or related topics organically?
 
 Rate Brand Safety on a scale of 1 (High Risk) to 5 (Brand Safe):
 - 1: Major risks (explicit content, controversial topics, negative sentiment)
@@ -261,6 +262,21 @@ Rate Brand Safety on a scale of 1 (High Risk) to 5 (Brand Safe):
 - 4: Low risk (professional, family-friendly)
 - 5: Excellent brand safety (highly professional, positive)
 
+Rate Natural Alignment on a scale of 1 (No Alignment) to 5 (Perfect Alignment):
+- 1: No brand relevance, completely different niche, no overlap
+- 2: Tangentially related, minimal overlap with brand values or products
+- 3: Same category, but no direct mentions of brand or competitors
+- 4: Discusses similar products/brands, occasional competitor mentions, relevant topics
+- 5: Already mentions brand/competitors organically, strong natural fit, highly relevant content
+
+When analyzing Natural Alignment, look for:
+- Exact or similar brand name mentions (organic, not sponsored)
+- Competitor brand mentions and product discussions
+- Product category discussions (e.g., "best fitness trackers" for a fitness brand)
+- Topic alignment with brand values and mission
+- Organic interest vs. paid promotion patterns
+- Historical content that shows genuine affinity for the product category
+
 Output JSON format:
 {
   "content_themes": ["theme1", "theme2", ...],
@@ -268,11 +284,18 @@ Output JSON format:
   "brand_safety_score": number (1-5),
   "sentiment": "positive" | "neutral" | "negative" | "mixed",
   "authenticity_score": number (1-5),
+  "natural_alignment_score": number (1-5),
   "audience_engagement_quality": "high" | "medium" | "low",
   "production_quality": "professional" | "semi-professional" | "casual",
   "key_observations": ["observation1", "observation2", ...],
   "potential_concerns": ["concern1", "concern2", ...],
-  "partnership_strengths": ["strength1", "strength2", ...]
+  "partnership_strengths": ["strength1", "strength2", ...],
+  "brand_mentions": {
+    "direct_brand_mentions": number,
+    "competitor_mentions": number,
+    "category_discussions": number,
+    "mention_examples": ["example1", "example2", ...]
+  }
 }"""
 
 

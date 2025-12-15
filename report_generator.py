@@ -115,13 +115,13 @@ class ReportGenerator:
                 platform_data.append({
                     'platform': account['platform'].title(),
                     'handle': account['handle'] or 'N/A',
-                    'followers': analytics.get('followers_count', 0),
-                    'total_posts': analytics.get('total_posts', 0),
-                    'engagement_rate': analytics.get('engagement_rate', 0.0),
+                    'followers': analytics.get('followers_count', 0) or 0,
+                    'total_posts': analytics.get('total_posts', 0) or 0,
+                    'engagement_rate': analytics.get('engagement_rate', 0.0) or 0.0,
                     'profile_url': account['profile_url']
                 })
 
-            # Get demographics data for this platform
+            # Get demographics data for this platform (silently)
             demographics = self.db.get_demographics_data(account['id'])
             if demographics:
                 demographics_data[account['platform']] = demographics
@@ -143,8 +143,16 @@ class ReportGenerator:
                         'post_url': post.get('post_url', ''),
                         'content_themes': post.get('content_themes', ''),
                         'brand_safety_score': post.get('brand_safety_score', 0.0),
+                        'natural_alignment_score': post.get('natural_alignment_score', 0.0),
                         'sentiment_score': post.get('sentiment_score', 0.0)
                     })
+
+        # Log demographics summary (only if debug mode is on)
+        if demographics_data:
+            platforms_with_demo = ', '.join(demographics_data.keys())
+            _debug_log(f"[REPORT] Using demographics for: {platforms_with_demo}")
+        else:
+            _debug_log(f"[REPORT] No demographics available for this report")
 
         if format == "markdown":
             return self._generate_markdown_report(
@@ -297,6 +305,10 @@ class ReportGenerator:
                     if post.get('brand_safety_score'):
                         posts_section += f"   - Brand Safety: {post['brand_safety_score']:.1f}/5.0\n"
 
+                    # Natural alignment score
+                    if post.get('natural_alignment_score'):
+                        posts_section += f"   - Natural Alignment: {post['natural_alignment_score']:.1f}/5.0\n"
+
                     # Content themes
                     if post.get('content_themes'):
                         themes = post['content_themes']
@@ -336,12 +348,30 @@ class ReportGenerator:
                     content_themes_section += f"- Brand Safety Score: {content_analysis.get('brand_safety_score', 'N/A')}/5.0\n"
                 if content_analysis.get('authenticity_score'):
                     content_themes_section += f"- Authenticity Score: {content_analysis.get('authenticity_score', 'N/A')}/5.0\n"
+                if content_analysis.get('natural_alignment_score'):
+                    content_themes_section += f"- Natural Alignment Score: {content_analysis.get('natural_alignment_score', 'N/A')}/5.0\n"
                 if content_analysis.get('audience_engagement_quality'):
                     content_themes_section += f"- Audience Engagement: {content_analysis.get('audience_engagement_quality', 'N/A').title()}\n"
                 if content_analysis.get('production_quality'):
                     content_themes_section += f"- Production Quality: {content_analysis.get('production_quality', 'N/A').title()}\n"
                 if content_analysis.get('sentiment'):
                     content_themes_section += f"- Overall Sentiment: {content_analysis.get('sentiment', 'N/A').title()}\n"
+
+                # Add brand mentions details if available
+                brand_mentions = content_analysis.get('brand_mentions', {})
+                if brand_mentions:
+                    content_themes_section += "\n**Brand Alignment Details:**\n\n"
+                    if brand_mentions.get('direct_brand_mentions', 0) > 0:
+                        content_themes_section += f"- Direct Brand Mentions: {brand_mentions.get('direct_brand_mentions', 0)}\n"
+                    if brand_mentions.get('competitor_mentions', 0) > 0:
+                        content_themes_section += f"- Competitor Mentions: {brand_mentions.get('competitor_mentions', 0)}\n"
+                    if brand_mentions.get('category_discussions', 0) > 0:
+                        content_themes_section += f"- Category Discussions: {brand_mentions.get('category_discussions', 0)}\n"
+                    if brand_mentions.get('mention_examples'):
+                        content_themes_section += f"\n**Example Mentions:**\n"
+                        for example in brand_mentions.get('mention_examples', [])[:5]:
+                            content_themes_section += f"  - \"{example}\"\n"
+
                 content_themes_section += "\n---\n\n"
 
         # Strengths and concerns
@@ -375,11 +405,12 @@ class ReportGenerator:
             video_section += "---\n\n"
 
         # Generate report
+        overall_score = report.get('overall_score') or 0
         markdown = f"""# Creator Analysis Report: {creator['name']}
 
 **Brief**: {brief['name']}
 **Date**: {datetime.now().strftime('%B %d, %Y')}
-**Overall Brand Fit**: {report['overall_score']}/5.0
+**Overall Brand Fit**: {overall_score}/5.0
 
 ---
 
@@ -418,7 +449,7 @@ class ReportGenerator:
 ---
 
 *Generated with BrandSafe Talent Analysis Tool*
-*Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${report.get('analysis_cost', 0.0):.4f}*
+*Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${(report.get('analysis_cost', 0.0) or 0.0):.4f}*
 """
 
         return markdown
@@ -433,6 +464,8 @@ class ReportGenerator:
         posts_data: list = None
     ) -> str:
         """Generate HTML formatted report"""
+
+        overall_score = report.get('overall_score') or 0
 
         # Platform statistics table
         platform_rows = ""
@@ -579,7 +612,7 @@ class ReportGenerator:
 
     <p><strong>Brief:</strong> {brief['name']}<br>
     <strong>Date:</strong> {datetime.now().strftime('%B %d, %Y')}<br>
-    <strong>Overall Brand Fit:</strong> <span class="score">{report['overall_score']}/10</span></p>
+    <strong>Overall Brand Fit:</strong> <span class="score">{overall_score}/10</span></p>
 
     <hr>
 
@@ -622,7 +655,7 @@ class ReportGenerator:
 
     <div class="metadata">
         <p><em>Generated with BrandSafe Talent Analysis Tool</em><br>
-        Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${report.get('analysis_cost', 0.0):.2f}</p>
+        Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${(report.get('analysis_cost', 0.0) or 0.0):.2f}</p>
     </div>
 </body>
 </html>
@@ -641,6 +674,7 @@ class ReportGenerator:
     ) -> str:
         """Generate plain text formatted report"""
 
+        overall_score = report.get('overall_score') or 0
         text = f"""
 {'='*80}
 CREATOR ANALYSIS REPORT: {creator['name']}
@@ -648,7 +682,7 @@ CREATOR ANALYSIS REPORT: {creator['name']}
 
 Brief: {brief['name']}
 Date: {datetime.now().strftime('%B %d, %Y')}
-Overall Brand Fit: {report['overall_score']}/10
+Overall Brand Fit: {overall_score}/10
 
 {'-'*80}
 EXECUTIVE SUMMARY
@@ -779,7 +813,7 @@ BRAND CONTEXT
 {'-'*80}
 
 Generated with BrandSafe Talent Analysis Tool
-Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${report.get('analysis_cost', 0.0):.2f}
+Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${(report.get('analysis_cost', 0.0) or 0.0):.2f}
 
 {'='*80}
 """
@@ -849,9 +883,9 @@ Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${r
         # Sort by score descending
         reports_df = reports_df.sort_values('overall_score', ascending=False)
 
-        # Calculate aggregate statistics
-        avg_score = reports_df['overall_score'].mean()
-        total_cost = reports_df['analysis_cost'].sum()
+        # Calculate aggregate statistics (handle None values)
+        avg_score = reports_df['overall_score'].fillna(0).mean()
+        total_cost = reports_df['analysis_cost'].fillna(0).sum()
         top_creators = reports_df.head(3)
 
         # Start building the report
@@ -876,8 +910,9 @@ Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${r
 """
 
         for idx, (_, row) in enumerate(top_creators.iterrows(), 1):
-            score_emoji = "🟢" if row['overall_score'] >= 4.0 else "🟡" if row['overall_score'] >= 3.0 else "🔴"
-            markdown += f"{idx}. {score_emoji} **{row['creator_name']}** - {row['overall_score']:.1f}/5.0 ({row['primary_platform']})\n"
+            score = row['overall_score'] or 0
+            score_emoji = "🟢" if score >= 4.0 else "🟡" if score >= 3.0 else "🔴"
+            markdown += f"{idx}. {score_emoji} **{row['creator_name']}** - {score:.1f}/5.0 ({row['primary_platform']})\n"
 
         markdown += "\n---\n\n## Creator Comparison Table\n\n"
         markdown += "| Rank | Creator | Platform | Brand Fit | Followers | Cost |\n"
@@ -893,19 +928,22 @@ Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${r
                 for _, acc in accounts_df.iterrows():
                     analytics = self.db.get_latest_analytics(int(acc['id']))
                     if analytics:
-                        total_followers += analytics.get('followers_count', 0)
+                        total_followers += analytics.get('followers_count', 0) or 0
 
             followers_display = f"{total_followers:,}" if total_followers > 0 else "N/A"
 
-            markdown += f"| {idx} | {row['creator_name']} | {row['primary_platform']} | {row['overall_score']:.1f}/5.0 | {followers_display} | ${row['analysis_cost']:.2f} |\n"
+            score = row['overall_score'] or 0
+            cost = row['analysis_cost'] or 0
+            markdown += f"| {idx} | {row['creator_name']} | {row['primary_platform']} | {score:.1f}/5.0 | {followers_display} | ${cost:.2f} |\n"
 
         markdown += "\n---\n\n## Individual Creator Reports\n\n"
 
         # Add each creator's detailed report
         for idx, (_, row) in enumerate(reports_df.iterrows(), 1):
-            score_emoji = "🟢" if row['overall_score'] >= 4.0 else "🟡" if row['overall_score'] >= 3.0 else "🔴"
+            score = row['overall_score'] or 0
+            score_emoji = "🟢" if score >= 4.0 else "🟡" if score >= 3.0 else "🔴"
 
-            markdown += f"### {idx}. {score_emoji} {row['creator_name']} - {row['overall_score']:.1f}/5.0\n\n"
+            markdown += f"### {idx}. {score_emoji} {row['creator_name']} - {score:.1f}/5.0\n\n"
 
             # Parse stored report data
             try:
@@ -976,9 +1014,11 @@ Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${r
 
                     analytics = self.db.get_latest_analytics(int(acc['id']))
                     if analytics:
-                        followers = f"{analytics.get('followers_count', 0):,}"
-                        engagement = f"{analytics.get('engagement_rate', 0):.2f}%"
-                        total_posts = analytics.get('total_posts', 0)
+                        followers_count = analytics.get('followers_count', 0) or 0
+                        engagement_rate = analytics.get('engagement_rate', 0) or 0
+                        followers = f"{followers_count:,}"
+                        engagement = f"{engagement_rate:.2f}%"
+                        total_posts = analytics.get('total_posts', 0) or 0
                     else:
                         followers = "N/A"
                         engagement = "N/A"
@@ -1041,9 +1081,12 @@ Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${r
                             caption_preview = caption[:80] + "..." if len(caption) > 80 else caption
 
                             markdown += f"{post_idx}. **{post_date}** - {caption_preview}\n"
-                            markdown += f"   - {int(post.get('likes_count', 0)):,} likes, {int(post.get('comments_count', 0)):,} comments"
-                            if post.get('views_count', 0) > 0:
-                                markdown += f", {int(post['views_count']):,} views"
+                            likes = int(post.get('likes_count', 0) or 0)
+                            comments = int(post.get('comments_count', 0) or 0)
+                            markdown += f"   - {likes:,} likes, {comments:,} comments"
+                            views = post.get('views_count', 0) or 0
+                            if views > 0:
+                                markdown += f", {int(views):,} views"
                             markdown += "\n"
                             if post.get('post_url'):
                                 markdown += f"   - [View Post]({post['post_url']})\n"
@@ -1051,7 +1094,8 @@ Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${r
 
                     markdown += "---\n\n"
 
-            markdown += f"**Analysis Cost:** ${row['analysis_cost']:.2f}\n"
+            cost = row['analysis_cost'] or 0
+            markdown += f"**Analysis Cost:** ${cost:.2f}\n"
             markdown += f"**Generated:** {row['generated_at']}\n\n"
             markdown += "---\n\n"
 
@@ -1110,9 +1154,9 @@ Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${r
         ws_summary['A1'].font = Font(size=16, bold=True)
         ws_summary['A2'] = f"Generated: {datetime.now().strftime('%B %d, %Y at %I:%M %p')}"
 
-        # Add metrics
-        avg_score = reports_df['overall_score'].mean()
-        total_cost = reports_df['analysis_cost'].sum()
+        # Add metrics (handle None values)
+        avg_score = reports_df['overall_score'].fillna(0).mean()
+        total_cost = reports_df['analysis_cost'].fillna(0).sum()
 
         ws_summary['A4'] = "Key Metrics"
         ws_summary['A4'].font = Font(bold=True, size=12)
@@ -1129,8 +1173,9 @@ Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${r
         top_creators = reports_df.head(3)
         row_idx = 10
         for idx, (_, row) in enumerate(top_creators.iterrows(), 1):
+            score = row['overall_score'] or 0
             ws_summary[f'A{row_idx}'] = f"{idx}. {row['creator_name']}"
-            ws_summary[f'B{row_idx}'] = f"{row['overall_score']:.1f}/5.0"
+            ws_summary[f'B{row_idx}'] = f"{score:.1f}/5.0"
             ws_summary[f'C{row_idx}'] = row['primary_platform']
             row_idx += 1
 
@@ -1156,15 +1201,17 @@ Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${r
                 for _, acc in accounts_df.iterrows():
                     analytics = self.db.get_latest_analytics(int(acc['id']))
                     if analytics:
-                        total_followers += analytics.get('followers_count', 0)
+                        total_followers += analytics.get('followers_count', 0) or 0
 
+            score = row['overall_score'] or 0
+            cost = row['analysis_cost'] or 0
             ws_comparison.append([
                 idx,
                 row['creator_name'],
                 row['primary_platform'],
-                f"{row['overall_score']:.1f}/5.0",
+                f"{score:.1f}/5.0",
                 f"{total_followers:,}" if total_followers > 0 else "N/A",
-                f"${row['analysis_cost']:.2f}"
+                f"${cost:.2f}"
             ])
 
         # Sheet 3: Detailed Reports
@@ -1191,10 +1238,11 @@ Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${r
                 concerns = []
                 recommendations = []
 
+            score = row['overall_score'] or 0
             ws_details.append([
                 idx,
                 row['creator_name'],
-                f"{row['overall_score']:.1f}/5.0",
+                f"{score:.1f}/5.0",
                 row.get('summary', 'N/A'),
                 '\n'.join(f"• {s}" for s in strengths) if strengths else 'N/A',
                 '\n'.join(f"• {c}" for c in concerns) if concerns else 'N/A',
@@ -1239,9 +1287,9 @@ Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${r
                             post_date,
                             post.get('post_type', 'post'),
                             caption_preview,
-                            int(post.get('likes_count', 0)),
-                            int(post.get('comments_count', 0)),
-                            int(post.get('views_count', 0)) if post.get('views_count') else 0,
+                            int(post.get('likes_count', 0) or 0),
+                            int(post.get('comments_count', 0) or 0),
+                            int(post.get('views_count', 0) or 0) if post.get('views_count') else 0,
                             f"{post.get('brand_safety_score', 0):.1f}" if post.get('brand_safety_score') else 'N/A',
                             post.get('post_url', '')
                         ])
@@ -1270,7 +1318,7 @@ Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${r
                 analytics = self.db.get_latest_analytics(int(acc['id']))
                 demographics = self.db.get_demographics_data(int(acc['id']))
 
-                followers = analytics.get('followers_count', 0) if analytics else 0
+                followers = (analytics.get('followers_count', 0) or 0) if analytics else 0
 
                 if demographics:
                     gender = demographics.get('gender', {})
@@ -1352,9 +1400,9 @@ Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${r
         # Sort by score descending
         reports_df = reports_df.sort_values('overall_score', ascending=False)
 
-        # Calculate metrics
-        avg_score = reports_df['overall_score'].mean()
-        total_cost = reports_df['analysis_cost'].sum()
+        # Calculate metrics (handle None values)
+        avg_score = reports_df['overall_score'].fillna(0).mean()
+        total_cost = reports_df['analysis_cost'].fillna(0).sum()
 
         # Create PDF
         buffer = io.BytesIO()
@@ -1422,8 +1470,9 @@ Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${r
         elements.append(Paragraph("Top 3 Recommended Creators", heading_style))
         top_creators = reports_df.head(3)
         for idx, (_, row) in enumerate(top_creators.iterrows(), 1):
-            score_indicator = "🟢" if row['overall_score'] >= 4.0 else "🟡" if row['overall_score'] >= 3.0 else "🔴"
-            elements.append(Paragraph(f"{idx}. <b>{row['creator_name']}</b> - {row['overall_score']:.1f}/5.0 ({row['primary_platform']})", styles['Normal']))
+            score = row['overall_score'] or 0
+            score_indicator = "🟢" if score >= 4.0 else "🟡" if score >= 3.0 else "🔴"
+            elements.append(Paragraph(f"{idx}. <b>{row['creator_name']}</b> - {score:.1f}/5.0 ({row['primary_platform']})", styles['Normal']))
             elements.append(Spacer(1, 6))
 
         elements.append(PageBreak())
@@ -1440,15 +1489,17 @@ Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${r
                 for _, acc in accounts_df.iterrows():
                     analytics = self.db.get_latest_analytics(int(acc['id']))
                     if analytics:
-                        total_followers += analytics.get('followers_count', 0)
+                        total_followers += analytics.get('followers_count', 0) or 0
 
+            score = row['overall_score'] or 0
+            cost = row['analysis_cost'] or 0
             comparison_data.append([
                 str(idx),
                 row['creator_name'],
                 row['primary_platform'],
-                f"{row['overall_score']:.1f}/5.0",
+                f"{score:.1f}/5.0",
                 f"{total_followers:,}" if total_followers > 0 else "N/A",
-                f"${row['analysis_cost']:.2f}"
+                f"${cost:.2f}"
             ])
 
         comparison_table = Table(comparison_data, colWidths=[0.5*inch, 1.5*inch, 1*inch, 1*inch, 1.2*inch, 0.8*inch])
@@ -1471,7 +1522,8 @@ Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${r
         elements.append(Paragraph("Individual Creator Detailed Reports", heading_style))
 
         for idx, (_, row) in enumerate(reports_df.iterrows(), 1):
-            elements.append(Paragraph(f"<b>{idx}. {row['creator_name']}</b> - {row['overall_score']:.1f}/5.0", styles['Heading3']))
+            score = row['overall_score'] or 0
+            elements.append(Paragraph(f"<b>{idx}. {row['creator_name']}</b> - {score:.1f}/5.0", styles['Heading3']))
             elements.append(Spacer(1, 6))
             elements.append(Paragraph(f"<b>Summary:</b> {row.get('summary', 'No summary available')}", styles['Normal']))
             elements.append(Spacer(1, 8))
@@ -1508,8 +1560,10 @@ Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${r
                     analytics = self.db.get_latest_analytics(int(acc['id']))
 
                     if analytics:
-                        followers = f"{analytics.get('followers_count', 0):,}"
-                        engagement = f"{analytics.get('engagement_rate', 0):.2f}%"
+                        followers_count = analytics.get('followers_count', 0) or 0
+                        engagement_rate = analytics.get('engagement_rate', 0) or 0
+                        followers = f"{followers_count:,}"
+                        engagement = f"{engagement_rate:.2f}%"
 
                         elements.append(Paragraph(f"<b>{platform}:</b> {followers} followers | {engagement} engagement", styles['Normal']))
 
