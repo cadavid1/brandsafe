@@ -268,7 +268,9 @@ def get_video_content(
 
         # Try transcript first (faster, cheaper)
         transcript_data = get_video_transcript(video_url)
-        if transcript_data:
+        # Check if transcript is substantial enough (at least 100 characters)
+        # Short transcripts (< 100 chars) are often YouTube Shorts with minimal captions
+        if transcript_data and len(transcript_data['transcript']) >= 100:
             metadata.update({
                 'transcript_available': True,
                 'transcript': transcript_data['transcript'],
@@ -278,9 +280,12 @@ def get_video_content(
                 'analysis_method': 'transcript'
             })
             return None, metadata
+        elif transcript_data and len(transcript_data['transcript']) < 100:
+            print(f"[INFO] Transcript too short ({len(transcript_data['transcript'])} chars), attempting video download...")
+        else:
+            print(f"[INFO] No transcript available, attempting video download...")
 
         # Fallback to full video download
-        print(f"[INFO] No transcript available, attempting video download...")
         download_info = download_video(video_url, download_dir, max_duration_seconds, max_filesize_mb)
         if download_info:
             metadata.update({

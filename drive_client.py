@@ -23,6 +23,32 @@ import time
 import random
 
 
+def _debug_log(message: str):
+    """Print debug message only if debug mode is enabled"""
+    try:
+        from storage import get_db
+        db = get_db()
+        # Try to get user_id from session state if available
+        if hasattr(st, 'session_state'):
+            # Check if we're in the auth module (has user_id directly)
+            if hasattr(st.session_state, 'user_id'):
+                user_id = st.session_state.user_id
+            # Or in regular session with auth
+            elif 'current_user_id' in st.session_state:
+                user_id = st.session_state.current_user_id
+            else:
+                user_id = 1  # Fallback
+        else:
+            user_id = 1
+
+        debug_mode = db.get_setting(user_id, "debug_mode", "false") == "true"
+        if debug_mode:
+            print(message)
+    except:
+        # If anything fails, don't show debug logs
+        pass
+
+
 class DriveAPIError(Exception):
     """Custom exception for Drive API errors"""
     pass
@@ -33,11 +59,11 @@ def _get_state_secret() -> str:
     # Use Streamlit secrets if available, otherwise fall back to env var
     try:
         secret = st.secrets.get("oauth_state_secret", os.getenv("OAUTH_STATE_SECRET", "default-secret-key"))
-        print(f"[OAuth Debug] Secret key from streamlit secrets: {repr(secret[:10])}... (length: {len(secret)})")
+        _debug_log(f"[OAuth Debug] Secret key from streamlit secrets: {repr(secret[:10])}... (length: {len(secret)})")
         return secret
     except Exception as e:
         secret = os.getenv("OAUTH_STATE_SECRET", "default-secret-key")
-        print(f"[OAuth Debug] Secret key from env/default: {repr(secret[:10])}... (length: {len(secret)}) [Exception: {e}]")
+        _debug_log(f"[OAuth Debug] Secret key from env/default: {repr(secret[:10])}... (length: {len(secret)}) [Exception: {e}]")
         return secret
 
 
@@ -64,16 +90,16 @@ def _create_state_token(user_id: int, username: str) -> str:
     payload_bytes = payload_json.encode('utf-8')
 
     # Create signature
-    print(f"[OAuth Debug] [CREATE] Getting secret for signing...")
+    _debug_log(f"[OAuth Debug] [CREATE] Getting secret for signing...")
     secret = _get_state_secret()
-    print(f"[OAuth Debug] [CREATE] Using secret: {repr(secret[:10])}... (length: {len(secret)})")
-    print(f"[OAuth Debug] [CREATE] Payload to sign: {repr(payload_bytes[:50])}...")
+    _debug_log(f"[OAuth Debug] [CREATE] Using secret: {repr(secret[:10])}... (length: {len(secret)})")
+    _debug_log(f"[OAuth Debug] [CREATE] Payload to sign: {repr(payload_bytes[:50])}...")
     signature = hmac.new(
         secret.encode('utf-8'),
         payload_bytes,
         hashlib.sha256
     ).digest()
-    print(f"[OAuth Debug] [CREATE] Generated signature: {base64.b64encode(signature).decode()[:32]}...")
+    _debug_log(f"[OAuth Debug] [CREATE] Generated signature: {base64.b64encode(signature).decode()[:32]}...")
 
     # Combine payload and signature with NULL byte delimiter (safe because NULL won't appear in JSON)
     token_bytes = payload_bytes + b'\x00' + signature
@@ -81,9 +107,9 @@ def _create_state_token(user_id: int, username: str) -> str:
     # Base64 encode
     token = base64.urlsafe_b64encode(token_bytes).decode('utf-8')
 
-    print(f"[OAuth Debug] Created state token for user_id={user_id}, username={username}")
-    print(f"[OAuth Debug] Full created token: {token}")
-    print(f"[OAuth Debug] Created token length: {len(token)}")
+    _debug_log(f"[OAuth Debug] Created state token for user_id={user_id}, username={username}")
+    _debug_log(f"[OAuth Debug] Full created token: {token}")
+    _debug_log(f"[OAuth Debug] Created token length: {len(token)}")
 
     return token
 
@@ -98,7 +124,7 @@ def _verify_state_token(token: str) -> Optional[Dict]:
     Returns:
         Dictionary with user_id and username if valid, None otherwise
     """
-    print(f"[OAuth Debug] Verifying state token: {token[:50]}...")
+    _debug_log(f"[OAuth Debug] Verifying state token: {token[:50]}...")
 
     try:
         # Base64 decode
@@ -107,45 +133,45 @@ def _verify_state_token(token: str) -> Optional[Dict]:
         # Split payload and signature on NULL byte delimiter
         parts = token_bytes.split(b'\x00', 1)
         if len(parts) != 2:
-            print("[OAuth Debug] ❌ Invalid token format (missing signature)")
+            _debug_log("[OAuth Debug] ❌ Invalid token format (missing signature)")
             return None
 
         payload_bytes, signature = parts
-        print(f"[OAuth Debug] [VERIFY] Received signature: {base64.b64encode(signature).decode()[:32]}...")
-        print(f"[OAuth Debug] [VERIFY] Payload to verify: {repr(payload_bytes[:50])}...")
+        _debug_log(f"[OAuth Debug] [VERIFY] Received signature: {base64.b64encode(signature).decode()[:32]}...")
+        _debug_log(f"[OAuth Debug] [VERIFY] Payload to verify: {repr(payload_bytes[:50])}...")
 
         # Verify signature
-        print(f"[OAuth Debug] [VERIFY] Getting secret for verification...")
+        _debug_log(f"[OAuth Debug] [VERIFY] Getting secret for verification...")
         secret = _get_state_secret()
-        print(f"[OAuth Debug] [VERIFY] Using secret: {repr(secret[:10])}... (length: {len(secret)})")
+        _debug_log(f"[OAuth Debug] [VERIFY] Using secret: {repr(secret[:10])}... (length: {len(secret)})")
         expected_signature = hmac.new(
             secret.encode('utf-8'),
             payload_bytes,
             hashlib.sha256
         ).digest()
-        print(f"[OAuth Debug] [VERIFY] Expected signature: {base64.b64encode(expected_signature).decode()[:32]}...")
+        _debug_log(f"[OAuth Debug] [VERIFY] Expected signature: {base64.b64encode(expected_signature).decode()[:32]}...")
 
         if not hmac.compare_digest(signature, expected_signature):
-            print("[OAuth Debug] ❌ Signature verification failed")
-            print(f"[OAuth Debug] ❌ Received:  {base64.b64encode(signature).decode()}")
-            print(f"[OAuth Debug] ❌ Expected:  {base64.b64encode(expected_signature).decode()}")
+            _debug_log("[OAuth Debug] ❌ Signature verification failed")
+            _debug_log(f"[OAuth Debug] ❌ Received:  {base64.b64encode(signature).decode()}")
+            _debug_log(f"[OAuth Debug] ❌ Expected:  {base64.b64encode(expected_signature).decode()}")
             return None
 
         # Decode payload
         payload = json.loads(payload_bytes.decode('utf-8'))
-        print(f"[OAuth Debug] ✅ Token decoded successfully: user_id={payload.get('user_id')}, username={payload.get('username')}")
+        _debug_log(f"[OAuth Debug] ✅ Token decoded successfully: user_id={payload.get('user_id')}, username={payload.get('username')}")
 
         # Check timestamp (reject tokens older than 1 hour)
         token_age = time.time() - payload.get('timestamp', 0)
         if token_age > 3600:
-            print(f"[OAuth Debug] ❌ Token expired (age: {token_age:.0f}s)")
+            _debug_log(f"[OAuth Debug] ❌ Token expired (age: {token_age:.0f}s)")
             return None
 
-        print(f"[OAuth Debug] ✅ Token valid (age: {token_age:.0f}s)")
+        _debug_log(f"[OAuth Debug] ✅ Token valid (age: {token_age:.0f}s)")
         return payload
 
     except Exception as e:
-        print(f"[OAuth Debug] ❌ Error verifying state token: {e}")
+        _debug_log(f"[OAuth Debug] ❌ Error verifying state token: {e}")
         return None
 
 
@@ -228,7 +254,7 @@ class DriveClient:
         Returns:
             Tuple of (Flow, auth_url)
         """
-        print(f"[OAuth Debug] Generating auth URL for user_id={user_id}, username={username}")
+        _debug_log(f"[OAuth Debug] Generating auth URL for user_id={user_id}, username={username}")
 
         flow = DriveClient.create_oauth_flow()
 
@@ -236,9 +262,9 @@ class DriveClient:
         state = None
         if user_id is not None and username:
             state = _create_state_token(user_id, username)
-            print(f"[OAuth Debug] State token will be included in OAuth URL")
+            _debug_log(f"[OAuth Debug] State token will be included in OAuth URL")
         else:
-            print(f"[OAuth Debug] ⚠️  No user info provided, state token will not be created")
+            _debug_log(f"[OAuth Debug] ⚠️  No user info provided, state token will not be created")
 
         auth_url, _ = flow.authorization_url(
             prompt='consent',
@@ -247,7 +273,7 @@ class DriveClient:
             state=state  # Pass user info in state parameter
         )
 
-        print(f"[OAuth Debug] Auth URL generated (contains state={state is not None})")
+        _debug_log(f"[OAuth Debug] Auth URL generated (contains state={state is not None})")
         return flow, auth_url
 
     @staticmethod
@@ -682,23 +708,23 @@ def handle_drive_oauth_callback():
     """
     query_params = st.query_params
 
-    print(f"[OAuth Debug] Callback handler called. Query params: {list(query_params.keys())}")
+    _debug_log(f"[OAuth Debug] Callback handler called. Query params: {list(query_params.keys())}")
 
     if 'code' in query_params:
-        print("[OAuth Debug] 🔄 OAuth callback detected (code parameter present)")
+        _debug_log("[OAuth Debug] 🔄 OAuth callback detected (code parameter present)")
 
         try:
             # Restore user authentication from state token if present
             if 'state' in query_params:
-                print("[OAuth Debug] State parameter found in callback")
+                _debug_log("[OAuth Debug] State parameter found in callback")
                 state_token = query_params['state']
-                print(f"[OAuth Debug] Raw state token from query params: {repr(state_token)}")
-                print(f"[OAuth Debug] State token length: {len(state_token)}")
-                print(f"[OAuth Debug] Full token: {state_token}")
+                _debug_log(f"[OAuth Debug] Raw state token from query params: {repr(state_token)}")
+                _debug_log(f"[OAuth Debug] State token length: {len(state_token)}")
+                _debug_log(f"[OAuth Debug] Full token: {state_token}")
                 user_data = _verify_state_token(state_token)
 
                 if user_data:
-                    print(f"[OAuth Debug] 🔐 Restoring authentication for user_id={user_data['user_id']}, username={user_data['username']}")
+                    _debug_log(f"[OAuth Debug] 🔐 Restoring authentication for user_id={user_data['user_id']}, username={user_data['username']}")
 
                     # Restore authentication session
                     st.session_state.authenticated = True
@@ -712,30 +738,30 @@ def handle_drive_oauth_callback():
                     if user:
                         st.session_state.user_email = user.get('email')
                         st.session_state.user_full_name = user.get('full_name', '')
-                        print(f"[OAuth Debug] ✅ Authentication restored successfully")
+                        _debug_log(f"[OAuth Debug] ✅ Authentication restored successfully")
                     else:
-                        print(f"[OAuth Debug] ⚠️  User not found in database")
+                        _debug_log(f"[OAuth Debug] ⚠️  User not found in database")
                 else:
-                    print("[OAuth Debug] ❌ State token verification failed")
+                    _debug_log("[OAuth Debug] ❌ State token verification failed")
                     st.warning("Session expired. Please log in again.")
             else:
-                print("[OAuth Debug] ⚠️  No state parameter in callback - authentication will NOT be restored")
+                _debug_log("[OAuth Debug] ⚠️  No state parameter in callback - authentication will NOT be restored")
 
             # Exchange code for token
-            print("[OAuth Debug] Exchanging authorization code for access token...")
+            _debug_log("[OAuth Debug] Exchanging authorization code for access token...")
             credentials = DriveClient.exchange_code_for_token(query_params['code'])
 
             # Store in session state
             st.session_state.drive_credentials = credentials
-            print("[OAuth Debug] ✅ Drive credentials stored in session")
+            _debug_log("[OAuth Debug] ✅ Drive credentials stored in session")
 
             # Clear query params
             st.query_params.clear()
-            print("[OAuth Debug] Query params cleared, triggering rerun...")
+            _debug_log("[OAuth Debug] Query params cleared, triggering rerun...")
             st.rerun()
 
         except Exception as e:
-            print(f"[OAuth Debug] ❌ Exception during OAuth callback: {e}")
+            _debug_log(f"[OAuth Debug] ❌ Exception during OAuth callback: {e}")
             st.error(f"Drive authentication failed: {e}")
             return False
 

@@ -860,7 +860,18 @@ Focus on visual elements, tone, and overall presentation quality."""
             # Add video insights to concerns/strengths
             video_insights = video_analysis.get('video_insights', [])
             if video_insights:
-                avg_video_safety = sum(v.get('brand_safety_score', 3) for v in video_insights) / len(video_insights)
+                # Safely convert brand_safety_score to float, handling string values
+                safety_scores = []
+                for v in video_insights:
+                    score = v.get('brand_safety_score', 3)
+                    try:
+                        # Convert to float if it's a string
+                        safety_scores.append(float(score))
+                    except (ValueError, TypeError):
+                        # Fallback to default if conversion fails
+                        safety_scores.append(3.0)
+
+                avg_video_safety = sum(safety_scores) / len(safety_scores)
                 if avg_video_safety >= 4:
                     strengths.append(f"Strong brand safety in video content ({len(video_insights)} videos analyzed)")
                 elif avg_video_safety < 3:

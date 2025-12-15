@@ -12,10 +12,10 @@ LOG_DIR = Path("./data/logs")
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 # Configure logging
-LOG_FILE = LOG_DIR / f"uxr_mate_{datetime.now().strftime('%Y%m%d')}.log"
+LOG_FILE = LOG_DIR / f"brandsafe_{datetime.now().strftime('%Y%m%d')}.log"
 
 # Create logger
-logger = logging.getLogger("uxr_mate")
+logger = logging.getLogger("brandsafe")
 logger.setLevel(logging.INFO)
 
 # File handler

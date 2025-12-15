@@ -8,7 +8,7 @@ from pathlib import Path
 # Import new modules
 from config import (
     MODELS, DEFAULT_MODEL, get_model_list, get_model_info,
-    estimate_cost, format_cost, DEFAULT_SYSTEM_PROMPT, DRIVE_ENABLED,
+    estimate_cost, format_cost, DRIVE_ENABLED,
     ANALYSIS_TIERS, PLATFORM_CONFIGS, DEFAULT_TIME_RANGE_DAYS,
     CREATOR_ANALYSIS_SYSTEM_PROMPT
 )
@@ -25,6 +25,7 @@ from creator_analyzer import CreatorAnalyzer, CreatorAnalysisError
 from report_generator import ReportGenerator
 from platform_clients import get_platform_client, PlatformClientError
 from web_scraper import detect_platform_from_url, extract_handle_from_url
+from visualization import ReportVisualizer
 
 # Google Drive integration (optional)
 try:
@@ -63,7 +64,7 @@ if auth.is_demo_mode():
         with col1:
             st.warning("🎭 **Demo Mode** - You're trying out the app! Your data will NOT be saved after this session ends.")
         with col2:
-            if st.button("Create Account", type="primary", use_container_width=True):
+            if st.button("Create Account", type="primary", width='stretch'):
                 # Clear demo session and show registration
                 auth.logout()
                 st.rerun()
@@ -89,9 +90,6 @@ if "api_key" not in st.session_state:
     else:
         saved_key = db.get_setting(user_id, "api_key", "")
     st.session_state.api_key = saved_key
-
-if "system_prompt" not in st.session_state:
-    st.session_state.system_prompt = DEFAULT_SYSTEM_PROMPT
 
 if "selected_model" not in st.session_state:
     # Load from database settings (skip for demo users)
@@ -144,6 +142,100 @@ def get_friction_label(friction_score):
         return "Moderate"
     else:  # 4-5
         return "High"
+
+def calculate_dynamic_cost_estimate(tier_key, num_creators, model_id, posts_for_analysis, max_videos_to_analyze):
+    """Calculate dynamic cost estimate based on actual user settings
+
+    Args:
+        tier_key: Analysis tier (quick, standard, deep, deep_research)
+        num_creators: Number of creators to analyze
+        model_id: Selected Gemini model ID
+        posts_for_analysis: Number of posts to send to Gemini
+        max_videos_to_analyze: Maximum videos to analyze per creator
+
+    Returns:
+        dict with 'total' and 'breakdown' keys containing cost estimates
+    """
+    try:
+        # Get model pricing
+        model_info = get_model_info(model_id)
+
+        # Calculate text analysis cost per creator
+        # Input tokens: posts * 600 tokens/post + 1000 for system prompt
+        input_tokens = posts_for_analysis * 600 + 1000
+        output_tokens = 500  # Conservative estimate for analysis JSON output
+
+        text_cost_per_creator = (
+            (input_tokens / 1_000_000) * model_info['cost_per_m_tokens_input'] +
+            (output_tokens / 1_000_000) * model_info['cost_per_m_tokens_output']
+        )
+
+        # Calculate video analysis cost per creator
+        # Using transcript-based cost as baseline (most common and conservative)
+        video_cost_per_creator = 0.0
+        if max_videos_to_analyze > 0:
+            video_cost_per_creator = max_videos_to_analyze * 0.01  # $0.01 per video transcript
+
+        # Calculate deep research cost per creator
+        research_cost_per_creator = 0.0
+        if tier_key == 'deep_research':
+            # Average deep research cost based on typical query complexity
+            # Uses Gemini 3 Pro pricing: $2.00 input / $12.00 output per M tokens
+            research_cost_per_creator = 1.50
+
+        # Calculate totals
+        total_text = text_cost_per_creator * num_creators
+        total_video = video_cost_per_creator * num_creators
+        total_research = research_cost_per_creator * num_creators
+
+        return {
+            'total': total_text + total_video + total_research,
+            'breakdown': {
+                'text_analysis': total_text,
+                'video_analysis': total_video,
+                'deep_research': total_research
+            }
+        }
+    except Exception as e:
+        # Fallback to static estimate if calculation fails
+        tier_info = ANALYSIS_TIERS.get(tier_key, ANALYSIS_TIERS['standard'])
+        fallback_cost = num_creators * tier_info.get('estimated_cost_per_creator', 0.0)
+        return {
+            'total': fallback_cost,
+            'breakdown': {
+                'text_analysis': fallback_cost,
+                'video_analysis': 0.0,
+                'deep_research': 0.0
+            }
+        }
+
+def format_cost_breakdown(cost_estimate, num_creators):
+    """Format cost estimate breakdown for display
+
+    Args:
+        cost_estimate: Dict from calculate_dynamic_cost_estimate()
+        num_creators: Number of creators
+
+    Returns:
+        Formatted string with cost breakdown
+    """
+    if num_creators == 0:
+        return ""
+
+    breakdown = cost_estimate['breakdown']
+    per_creator_text = breakdown['text_analysis'] / num_creators
+    per_creator_video = breakdown['video_analysis'] / num_creators
+    per_creator_research = breakdown['deep_research'] / num_creators
+
+    lines = []
+    if per_creator_text > 0:
+        lines.append(f"  - Text Analysis: {format_cost(per_creator_text)}")
+    if per_creator_video > 0:
+        lines.append(f"  - Video Analysis: {format_cost(per_creator_video)}")
+    if per_creator_research > 0:
+        lines.append(f"  - Deep Research: {format_cost(per_creator_research)}")
+
+    return "\n".join(lines) if lines else ""
 
 def check_first_time_user():
     """Show welcome message for first-time users"""
@@ -254,13 +346,14 @@ with st.sidebar.expander("⌨️ Shortcuts & Tips"):
 # Show welcome message for first-time users
 check_first_time_user()
 
-tab_home, tab_setup, tab_briefs, tab_creators, tab_analysis, tab_reports = st.tabs([
+tab_home, tab_setup, tab_briefs, tab_creators, tab_analysis, tab_reports, tab_compare = st.tabs([
     "🏠 Home",
     "⚙️ System Setup",
     "📄 Briefs",
     "👥 Creators",
     "🔍 Analysis",
-    "📊 Reports"
+    "📊 Reports",
+    "⚖️ Compare"
 ])
 
 # --- TAB: HOME/OVERVIEW ---
@@ -511,6 +604,20 @@ with tab_setup:
             else:
                 st.caption("**Cost:** Free during preview")
 
+        # Show cost impact notice if model differs from default
+        if st.session_state.selected_model != DEFAULT_MODEL:
+            default_info = get_model_info(DEFAULT_MODEL)
+            # Compare output cost as it's typically the dominant factor
+            if default_info['cost_per_m_tokens_output'] > 0 and model_info['cost_per_m_tokens_output'] > 0:
+                cost_multiplier = (
+                    model_info['cost_per_m_tokens_output'] /
+                    default_info['cost_per_m_tokens_output']
+                )
+                if cost_multiplier > 1.2:
+                    st.warning(f"⚠️ This model costs ~{cost_multiplier:.1f}x more than the default model ({default_info['display_name']})")
+                elif cost_multiplier < 0.8:
+                    st.info(f"💡 This model costs ~{1/cost_multiplier:.1f}x less than the default model ({default_info['display_name']})")
+
         # Default model preference
         st.markdown("---")
         current_default = db.get_setting(user_id, "default_model", DEFAULT_MODEL)
@@ -529,12 +636,30 @@ with tab_setup:
             else:
                 st.caption("✓ This is default")
 
-    with st.expander("System Prompt", expanded=True):
-        st.session_state.system_prompt = st.text_area(
-            "Analysis Instruction",
-            value=st.session_state.system_prompt,
-            height=200
+    with st.expander("Debug Mode", expanded=False):
+        st.markdown("Enable verbose debug logging in the terminal/console")
+
+        # Get current debug mode setting
+        debug_mode = db.get_setting(user_id, "debug_mode", "false") == "true"
+
+        new_debug_mode = st.checkbox(
+            "Enable Debug Logging",
+            value=debug_mode,
+            help="Shows detailed logs for OAuth, API calls, and internal operations in the terminal"
         )
+
+        if new_debug_mode != debug_mode:
+            db.save_setting(user_id, "debug_mode", "true" if new_debug_mode else "false")
+            if new_debug_mode:
+                st.success("✅ Debug mode enabled - check your terminal for detailed logs")
+            else:
+                st.success("✅ Debug mode disabled")
+            st.rerun()
+
+        if debug_mode:
+            st.info("🐛 Debug mode is ON - verbose logging active in terminal")
+        else:
+            st.caption("Debug mode is off - minimal console output")
 
     with st.expander("YouTube Configuration (Optional)", expanded=False):
         st.markdown("Add YouTube Data API v3 keys to enable creator analysis on YouTube.")
@@ -1120,11 +1245,14 @@ with tab_creators:
                         )
                         if selected_brief != "(Select a brief)":
                             if st.button(f"Link to {selected_brief}", key=f"link_btn_{creator['id']}"):
-                                brief_id = briefs_df_link[briefs_df_link['name'] == selected_brief].iloc[0]['id']
-                                db.link_creator_to_brief(brief_id, creator['id'])
-                                st.success(f"Linked {creator['name']} to {selected_brief}")
-                                time.sleep(1)
-                                st.rerun()
+                                brief_id = int(briefs_df_link[briefs_df_link['name'] == selected_brief].iloc[0]['id'])
+                                result = db.link_creator_to_brief(brief_id, creator['id'])
+                                if result:
+                                    st.success(f"Linked {creator['name']} to {selected_brief}")
+                                    time.sleep(1)
+                                    st.rerun()
+                                else:
+                                    st.error(f"Failed to link {creator['name']} to {selected_brief}. Check the terminal for details.")
                     else:
                         st.caption("No briefs available. Create a brief first.")
 
@@ -1184,7 +1312,7 @@ with tab_analysis:
 
         if selected_brief_name:
             brief_row = briefs_df[briefs_df['name'] == selected_brief_name].iloc[0]
-            brief_id = brief_row['id']
+            brief_id = int(brief_row['id'])
 
             # Get creators for this brief
             creators_in_brief = db.get_creators_for_brief(brief_id)
@@ -1213,7 +1341,7 @@ with tab_analysis:
                         label_visibility="collapsed"
                     )
                 with col_clear:
-                    if search_query and st.button("✕ Clear", use_container_width=True, key="clear_search_analysis"):
+                    if search_query and st.button("✕ Clear", width='stretch', key="clear_search_analysis"):
                         st.session_state.creator_search_analysis = ""
                         st.rerun()
 
@@ -1254,12 +1382,12 @@ with tab_analysis:
                 col_select1, col_select2, col_select3 = st.columns([1, 1, 2])
 
                 with col_select1:
-                    if st.button("✓ Select All", use_container_width=True, help="Select all creators (including filtered)"):
+                    if st.button("✓ Select All", width='stretch', help="Select all creators (including filtered)"):
                         st.session_state.selected_creators_for_analysis = set(creators_in_brief['id'].tolist())
                         st.rerun()
 
                 with col_select2:
-                    if st.button("✗ Deselect All", use_container_width=True, help="Deselect all creators"):
+                    if st.button("✗ Deselect All", width='stretch', help="Deselect all creators"):
                         st.session_state.selected_creators_for_analysis = set()
                         st.rerun()
 
@@ -1363,14 +1491,43 @@ with tab_analysis:
                     tier_info = ANALYSIS_TIERS[analysis_depth]
                     st.caption(f"**{tier_info['name']}**: {tier_info['description']}")
 
-                    # Cost estimate
-                    estimated_cost = len(creators_to_analyze) * tier_info['estimated_cost_per_creator']
-                    st.info(f"💰 **Estimated Cost**: {format_cost(estimated_cost)} ({len(creators_to_analyze)} creator(s) × {format_cost(tier_info['estimated_cost_per_creator'])} each)")
+                    # Dynamic cost estimate
+                    if len(creators_to_analyze) > 0:
+                        # Get current user settings
+                        model_id = db.get_setting(user_id, "model", DEFAULT_MODEL)
+                        posts_for_analysis = int(db.get_setting(user_id, "posts_for_gemini_analysis", "20"))
+                        max_videos = tier_info.get('max_videos_to_analyze', 0)
+
+                        # Calculate dynamic estimate
+                        cost_estimate = calculate_dynamic_cost_estimate(
+                            tier_key=analysis_depth,
+                            num_creators=len(creators_to_analyze),
+                            model_id=model_id,
+                            posts_for_analysis=posts_for_analysis,
+                            max_videos_to_analyze=max_videos
+                        )
+
+                        # Display with breakdown
+                        total_cost = cost_estimate['total']
+                        per_creator_cost = total_cost / len(creators_to_analyze)
+
+                        breakdown_text = format_cost_breakdown(cost_estimate, len(creators_to_analyze))
+
+                        cost_info = f"""💰 **Estimated Cost**: {format_cost(total_cost)}
+({len(creators_to_analyze)} creator(s) × {format_cost(per_creator_cost)} each)
+
+**Cost Breakdown per Creator**:
+{breakdown_text}"""
+
+                        st.info(cost_info)
+                        st.caption("💡 Estimates may vary based on actual content complexity")
+                    else:
+                        st.info("💰 **Estimated Cost**: Select creators to see cost estimate")
 
                     st.markdown("---")
 
                     # Run analysis button
-                    if st.button("🚀 Run Analysis", type="primary", use_container_width=True):
+                    if st.button("🚀 Run Analysis", type="primary", width='stretch'):
                         if not st.session_state.api_key:
                             st.error("⚠️ Gemini API Key required. Please configure in System Setup tab.")
                             st.stop()
@@ -1511,7 +1668,7 @@ with tab_reports:
 
                 # Markdown Export
                 with col1:
-                    if st.button("📄 Markdown", key="export_brief_md", use_container_width=True):
+                    if st.button("📄 Markdown", key="export_brief_md", width='stretch'):
                         try:
                             from report_generator import ReportGenerator
                             gen = ReportGenerator()
@@ -1527,7 +1684,7 @@ with tab_reports:
                                 file_name=filename,
                                 mime="text/markdown",
                                 key="download_brief_md_final",
-                                use_container_width=True
+                                width='stretch'
                             )
 
                         except Exception as e:
@@ -1535,7 +1692,7 @@ with tab_reports:
 
                 # PDF Export
                 with col2:
-                    if st.button("📕 PDF", key="export_brief_pdf", use_container_width=True):
+                    if st.button("📕 PDF", key="export_brief_pdf", width='stretch'):
                         try:
                             # Force reload to pick up new dependencies
                             import sys
@@ -1560,7 +1717,7 @@ with tab_reports:
                                     file_name=filename,
                                     mime="application/pdf",
                                     key="download_brief_pdf_final",
-                                    use_container_width=True
+                                    width='stretch'
                                 )
                             else:
                                 st.error("Failed to generate PDF")
@@ -1572,7 +1729,7 @@ with tab_reports:
 
                 # Excel Export
                 with col3:
-                    if st.button("📊 Excel", key="export_brief_excel", use_container_width=True):
+                    if st.button("📊 Excel", key="export_brief_excel", width='stretch'):
                         try:
                             # Force reload to pick up new dependencies
                             import sys
@@ -1597,7 +1754,7 @@ with tab_reports:
                                     file_name=filename,
                                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                     key="download_brief_excel_final",
-                                    use_container_width=True
+                                    width='stretch'
                                 )
                             else:
                                 st.error("Failed to generate Excel")
@@ -1606,6 +1763,80 @@ with tab_reports:
                             import traceback
                             st.error(f"Failed to generate Excel: {str(e)}")
                             print(f"[ERROR] Excel Export failed:\n{traceback.format_exc()}")
+
+                st.markdown("---")
+
+                # Visual Analytics Section
+                st.markdown("### 📊 Portfolio Analytics")
+
+                # Initialize visualizer
+                viz = ReportVisualizer()
+
+                # Create metrics cards
+                col_metric1, col_metric2, col_metric3, col_metric4 = st.columns(4)
+
+                total_reach = 0
+                avg_score = 0
+                platform_counts = {}
+
+                # Calculate portfolio stats
+                for _, report_row in reports_df.iterrows():
+                    # Get creator info
+                    creator_id = report_row['creator_id']
+                    creator = db.get_creator(creator_id)
+
+                    if creator:
+                        # Get social accounts
+                        social_accounts = db.get_social_accounts(creator_id)
+                        for _, account in social_accounts.iterrows():
+                            # Get latest analytics
+                            analytics = db.get_latest_analytics(account['id'])
+                            if analytics:
+                                followers = analytics.get('followers_count', 0)
+                                total_reach += followers
+
+                                platform = account['platform']
+                                platform_counts[platform] = platform_counts.get(platform, 0) + 1
+
+                avg_score = reports_df['overall_score'].mean() if not reports_df.empty else 0
+
+                # Display metrics
+                with col_metric1:
+                    st.metric("Total Reach", f"{total_reach:,.0f}", help="Combined followers across all creators")
+
+                with col_metric2:
+                    st.metric("Avg Score", f"{avg_score:.1f}/5", help="Average brand safety score")
+
+                with col_metric3:
+                    st.metric("Creators", len(reports_df), help="Number of analyzed creators")
+
+                with col_metric4:
+                    st.metric("Platforms", len(platform_counts), help="Number of platforms covered")
+
+                # Charts row
+                col_chart1, col_chart2 = st.columns(2)
+
+                with col_chart1:
+                    # Score distribution histogram
+                    scores = reports_df['overall_score'].tolist()
+                    fig_scores = viz.create_score_distribution_histogram(scores)
+                    st.plotly_chart(fig_scores, width='stretch')
+
+                with col_chart2:
+                    # Platform distribution pie chart
+                    if platform_counts:
+                        import plotly.graph_objects as go
+                        fig_platforms = go.Figure(data=[go.Pie(
+                            labels=list(platform_counts.keys()),
+                            values=list(platform_counts.values()),
+                            marker=dict(colors=['#2E86AB', '#06D6A0', '#F77F00', '#118AB2']),
+                            hovertemplate='<b>%{label}</b><br>Creators: %{value}<br><extra></extra>'
+                        )])
+                        fig_platforms.update_layout(
+                            title='Platform Distribution',
+                            template='plotly_white'
+                        )
+                        st.plotly_chart(fig_platforms, width='stretch')
 
                 st.markdown("---")
 
@@ -1650,7 +1881,7 @@ with tab_reports:
                                     file_name=f"report_{report_row['creator_name'].replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.md",
                                     mime="text/markdown",
                                     key=f"md_{report_row['id']}",
-                                    use_container_width=True
+                                    width='stretch'
                                 )
 
                             with col_export2:
@@ -1666,7 +1897,7 @@ with tab_reports:
                                     file_name=f"report_{report_row['creator_name'].replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.html",
                                     mime="text/html",
                                     key=f"html_{report_row['id']}",
-                                    use_container_width=True
+                                    width='stretch'
                                 )
 
                             with col_export3:
@@ -1682,7 +1913,7 @@ with tab_reports:
                                     file_name=f"report_{report_row['creator_name'].replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.txt",
                                     mime="text/plain",
                                     key=f"txt_{report_row['id']}",
-                                    use_container_width=True
+                                    width='stretch'
                                 )
 
                             # Delete report button
@@ -1697,4 +1928,291 @@ with tab_reports:
 
                         except Exception as e:
                             st.error(f"Error generating report: {str(e)}")
+
+
+# --- TAB: COMPARE ---
+with tab_compare:
+    st.header("Compare Creators")
+    st.caption("Side-by-side comparison of multiple creators")
+
+    # Import comparison engine
+    from comparison_engine import ComparisonEngine
+
+    # Select brief
+    briefs_df = db.get_briefs(user_id)
+
+    if briefs_df.empty:
+        st.info("""
+        📄 **No briefs yet**
+
+        Create a brief and run analysis first to compare creators.
+        """)
+    else:
+        selected_brief_name = st.selectbox(
+            "Select Brief",
+            briefs_df['name'].tolist(),
+            key="compare_brief_select"
+        )
+
+        if selected_brief_name:
+            brief_row = briefs_df[briefs_df['name'] == selected_brief_name].iloc[0]
+            brief_id = int(brief_row['id'])
+
+            # Get all creators for this brief
+            creators_df = db.get_creators_for_brief(brief_id)
+
+            if creators_df.empty:
+                st.info("No creators in this brief. Add creators first.")
+            else:
+                # Multi-select creators to compare (max 5)
+                st.markdown("### Select Creators to Compare (up to 5)")
+                selected_creators = st.multiselect(
+                    "Choose creators",
+                    creators_df['name'].tolist(),
+                    default=creators_df['name'].tolist()[:min(3, len(creators_df))],
+                    max_selections=5,
+                    key="compare_creators_select"
+                )
+
+                if not selected_creators:
+                    st.warning("Please select at least 2 creators to compare")
+                elif len(selected_creators) < 2:
+                    st.warning("Please select at least 2 creators for comparison")
+                else:
+                    # Get creator IDs
+                    creator_ids = []
+                    for name in selected_creators:
+                        creator_row = creators_df[creators_df['name'] == name].iloc[0]
+                        creator_ids.append(int(creator_row['id']))
+
+                    # Initialize comparison engine
+                    comp_engine = ComparisonEngine(db)
+
+                    # Run comparison
+                    comparison = comp_engine.compare_creators(creator_ids, brief_id)
+
+                    if 'error' in comparison:
+                        st.error(comparison['error'])
+                    else:
+                        # Display summary metrics
+                        st.markdown("### 📊 Comparison Summary")
+
+                        col_sum1, col_sum2, col_sum3, col_sum4 = st.columns(4)
+
+                        summary = comparison['metrics_summary']
+
+                        with col_sum1:
+                            st.metric("Total Reach", f"{summary.get('total_reach', 0):,.0f}")
+
+                        with col_sum2:
+                            st.metric("Avg Score", f"{summary.get('avg_overall_score', 0):.1f}/5")
+
+                        with col_sum3:
+                            st.metric("Avg Engagement", f"{summary.get('avg_engagement_rate', 0):.2f}%")
+
+                        with col_sum4:
+                            st.metric("Est. Cost", f"${summary.get('total_estimated_cost', 0):.2f}")
+
+                        st.markdown("---")
+
+                        # Comparison table
+                        st.markdown("### 📋 Side-by-Side Comparison")
+
+                        comparison_table = []
+                        for creator_data in comparison['creators']:
+                            comparison_table.append({
+                                'Creator': creator_data['name'],
+                                'Platforms': ', '.join(creator_data['platforms']),
+                                'Followers': f"{creator_data['total_followers']:,.0f}",
+                                'Engagement': f"{creator_data['avg_engagement_rate']:.2f}%",
+                                'Score': f"{creator_data['overall_score']:.1f}/5",
+                                'Brand Safety': f"{creator_data['brand_safety_score']:.1f}/5",
+                                'Cost': f"${creator_data['estimated_cost']:.2f}"
+                            })
+
+                        comparison_df = pd.DataFrame(comparison_table)
+                        st.dataframe(comparison_df, width='stretch', hide_index=True)
+
+                        st.markdown("---")
+
+                        # Visual comparisons
+                        st.markdown("### 📈 Visual Comparison")
+
+                        col_viz1, col_viz2 = st.columns(2)
+
+                        with col_viz1:
+                            # Bar chart: Overall scores
+                            import plotly.graph_objects as go
+
+                            fig_scores = go.Figure(data=[
+                                go.Bar(
+                                    x=[c['name'] for c in comparison['creators']],
+                                    y=[c['overall_score'] for c in comparison['creators']],
+                                    marker_color=['#06D6A0' if c['overall_score'] >= 4 else
+                                                 '#F77F00' if c['overall_score'] >= 3 else
+                                                 '#EF476F' for c in comparison['creators']],
+                                    text=[f"{c['overall_score']:.1f}" for c in comparison['creators']],
+                                    textposition='auto'
+                                )
+                            ])
+
+                            fig_scores.update_layout(
+                                title='Overall Scores Comparison',
+                                xaxis_title='Creator',
+                                yaxis_title='Score (out of 5)',
+                                template='plotly_white',
+                                yaxis=dict(range=[0, 5])
+                            )
+
+                            st.plotly_chart(fig_scores, width='stretch')
+
+                        with col_viz2:
+                            # Bar chart: Followers
+                            fig_followers = go.Figure(data=[
+                                go.Bar(
+                                    x=[c['name'] for c in comparison['creators']],
+                                    y=[c['total_followers'] for c in comparison['creators']],
+                                    marker_color='#2E86AB',
+                                    text=[f"{c['total_followers']:,.0f}" for c in comparison['creators']],
+                                    textposition='auto'
+                                )
+                            ])
+
+                            fig_followers.update_layout(
+                                title='Total Followers Comparison',
+                                xaxis_title='Creator',
+                                yaxis_title='Followers',
+                                template='plotly_white'
+                            )
+
+                            st.plotly_chart(fig_followers, width='stretch')
+
+                        # Radar chart for brand safety dimensions
+                        st.markdown("### 🎯 Multi-Dimensional Comparison")
+
+                        # Create radar chart
+                        from visualization import ReportVisualizer
+                        viz = ReportVisualizer()
+
+                        fig_radar = go.Figure()
+
+                        categories = ['Overall Score', 'Brand Safety', 'Content Quality',
+                                     'Audience Fit', 'Engagement Quality']
+
+                        for creator_data in comparison['creators']:
+                            values = [
+                                creator_data['overall_score'],
+                                creator_data['brand_safety_score'],
+                                creator_data['content_quality_score'],
+                                creator_data['audience_fit_score'],
+                                creator_data['engagement_quality_score']
+                            ]
+
+                            # Close the radar
+                            values_closed = values + [values[0]]
+                            categories_closed = categories + [categories[0]]
+
+                            fig_radar.add_trace(go.Scatterpolar(
+                                r=values_closed,
+                                theta=categories_closed,
+                                fill='toself',
+                                name=creator_data['name']
+                            ))
+
+                        fig_radar.update_layout(
+                            polar=dict(
+                                radialaxis=dict(visible=True, range=[0, 5])
+                            ),
+                            title='Brand Fit Dimensions',
+                            template='plotly_white',
+                            showlegend=True
+                        )
+
+                        st.plotly_chart(fig_radar, width='stretch')
+
+                        st.markdown("---")
+
+                        # Rankings section
+                        st.markdown("### 🏆 Rankings")
+
+                        col_rank1, col_rank2, col_rank3 = st.columns(3)
+
+                        rankings = comparison['rankings']
+
+                        with col_rank1:
+                            st.markdown("**By Overall Score**")
+                            for rank_data in rankings.get('overall_score', [])[:5]:
+                                st.write(f"{rank_data['rank']}. {rank_data['name']} ({rank_data['value']:.1f})")
+
+                        with col_rank2:
+                            st.markdown("**By Followers**")
+                            for rank_data in rankings.get('total_followers', [])[:5]:
+                                st.write(f"{rank_data['rank']}. {rank_data['name']} ({rank_data['value']:,.0f})")
+
+                        with col_rank3:
+                            st.markdown("**By Engagement**")
+                            for rank_data in rankings.get('avg_engagement_rate', [])[:5]:
+                                st.write(f"{rank_data['rank']}. {rank_data['name']} ({rank_data['value']:.2f}%)")
+
+                        st.markdown("---")
+
+                        # ROI Calculator
+                        with st.expander("💰 Campaign ROI Calculator", expanded=False):
+                            st.markdown("Estimate the return on investment for a campaign with these creators")
+
+                            col_roi1, col_roi2 = st.columns(2)
+
+                            with col_roi1:
+                                campaign_budget = st.number_input(
+                                    "Campaign Budget ($)",
+                                    min_value=0.0,
+                                    value=10000.0,
+                                    step=1000.0,
+                                    key="roi_budget"
+                                )
+
+                            with col_roi2:
+                                expected_cpa = st.number_input(
+                                    "Expected Revenue per Conversion ($)",
+                                    min_value=0.0,
+                                    value=100.0,
+                                    step=10.0,
+                                    key="roi_cpa"
+                                )
+
+                            if st.button("Calculate ROI", key="calc_roi"):
+                                roi_data = comp_engine.estimate_campaign_roi(
+                                    creator_ids, campaign_budget, expected_cpa, brief_id
+                                )
+
+                                if 'error' not in roi_data:
+                                    st.markdown("#### 📊 ROI Projections")
+
+                                    col_roi_res1, col_roi_res2, col_roi_res3, col_roi_res4 = st.columns(4)
+
+                                    with col_roi_res1:
+                                        st.metric("Est. Impressions", f"{roi_data['estimated_impressions']:,.0f}")
+
+                                    with col_roi_res2:
+                                        st.metric("Est. Engagement", f"{roi_data['estimated_engagement']:,.0f}")
+
+                                    with col_roi_res3:
+                                        st.metric("Est. Conversions", f"{roi_data['estimated_conversions']:,.0f}")
+
+                                    with col_roi_res4:
+                                        roi_pct = roi_data['roi_percentage']
+                                        roi_color = "normal" if roi_pct > 0 else "inverse"
+                                        st.metric("ROI", f"{roi_pct:.1f}%", delta=None)
+
+                                    st.markdown("---")
+
+                                    st.info(f"""
+                                    **Assumptions:**
+                                    - Each creator posts 3 times
+                                    - 1% of engaged users convert
+                                    - Cost per impression: ${roi_data['cost_per_impression']:.4f}
+                                    - Cost per engagement: ${roi_data['cost_per_engagement']:.2f}
+                                    """)
+                                else:
+                                    st.error(roi_data['error'])
 

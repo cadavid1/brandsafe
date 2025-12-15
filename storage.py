@@ -314,6 +314,7 @@ class DatabaseManager:
         self._migrate_to_multiuser(cursor)
         self._migrate_email_optional(cursor)
         self._migrate_creator_reports_table(cursor)
+        self._fix_brief_creators_data_types(cursor)
 
         conn.commit()
         conn.close()
@@ -474,6 +475,43 @@ class DatabaseManager:
                 print("Added column: video_insights to creator_reports")
         except Exception as e:
             print(f"Creator reports migration warning: {e}")
+
+    def _fix_brief_creators_data_types(self, cursor):
+        """Fix brief_creators table where brief_id may have been stored as binary data"""
+        try:
+            # Check if there are any rows with corrupted data
+            cursor.execute("SELECT id, brief_id, creator_id, status, added_at FROM brief_creators")
+            rows = cursor.fetchall()
+
+            corrupted_rows = []
+            for row in rows:
+                brief_id = row[1]
+                # Check if brief_id is binary data (bytes object)
+                if isinstance(brief_id, bytes):
+                    # Convert binary to integer (assuming little-endian)
+                    try:
+                        brief_id_int = int.from_bytes(brief_id[:8], byteorder='little')
+                        corrupted_rows.append((row[0], brief_id_int, row[2], row[3], row[4]))
+                    except:
+                        print(f"Could not convert brief_id for row {row[0]}")
+
+            if corrupted_rows:
+                print(f"Fixing {len(corrupted_rows)} corrupted rows in brief_creators table...")
+                # Delete the corrupted rows
+                for row_id, _, _, _, _ in corrupted_rows:
+                    cursor.execute("DELETE FROM brief_creators WHERE id = ?", (row_id,))
+
+                # Reinsert with correct data types
+                for row_id, brief_id, creator_id, status, added_at in corrupted_rows:
+                    cursor.execute("""
+                        INSERT INTO brief_creators (brief_id, creator_id, status, added_at)
+                        VALUES (?, ?, ?, ?)
+                    """, (brief_id, creator_id, status, added_at))
+                    print(f"  Fixed: brief_id={brief_id}, creator_id={creator_id}")
+
+                print("brief_creators table data fix complete!")
+        except Exception as e:
+            print(f"brief_creators data fix warning: {e}")
 
     # === User Management ===
 
@@ -1147,45 +1185,40 @@ class DatabaseManager:
         conn = self._get_connection()
         cursor = conn.cursor()
 
-        # Total counts for this user
-        cursor.execute("SELECT COUNT(*) as count FROM cujs WHERE user_id = ?", (user_id,))
-        total_cujs = cursor.fetchone()['count']
+        # Total counts for creator analysis
+        cursor.execute("SELECT COUNT(*) as count FROM briefs WHERE user_id = ?", (user_id,))
+        total_briefs = cursor.fetchone()['count']
 
-        cursor.execute("SELECT COUNT(*) as count FROM videos WHERE user_id = ?", (user_id,))
-        total_videos = cursor.fetchone()['count']
+        cursor.execute("SELECT COUNT(*) as count FROM creators WHERE user_id = ?", (user_id,))
+        total_creators = cursor.fetchone()['count']
 
         cursor.execute("""
             SELECT COUNT(*) as count
-            FROM analysis_results ar
-            JOIN cujs c ON ar.cuj_id = c.id
-            JOIN videos v ON ar.video_id = v.id
-            WHERE c.user_id = ?
+            FROM creator_reports cr
+            JOIN briefs b ON cr.brief_id = b.id
+            WHERE b.user_id = ?
         """, (user_id,))
         total_analyses = cursor.fetchone()['count']
 
-        # Total cost (only for this user's analyses)
-        # Use LEFT JOINs to include all analyses even if CUJ/video was deleted
-        # But still filter by user_id through the cujs table relationship
+        # Total cost from creator analyses
         cursor.execute("""
-            SELECT SUM(ar.cost) as total
-            FROM analysis_results ar
-            INNER JOIN cujs c ON ar.cuj_id = c.id
-            LEFT JOIN videos v ON ar.video_id = v.id
-            WHERE c.user_id = ?
+            SELECT SUM(cr.analysis_cost) as total
+            FROM creator_reports cr
+            JOIN briefs b ON cr.brief_id = b.id
+            WHERE b.user_id = ?
         """, (user_id,))
         total_cost = cursor.fetchone()['total'] or 0.0
 
-        # Average friction score (only for this user)
+        # Average brand fit score
         cursor.execute("""
-            SELECT AVG(ar.friction_score) as avg
-            FROM analysis_results ar
-            INNER JOIN cujs c ON ar.cuj_id = c.id
-            LEFT JOIN videos v ON ar.video_id = v.id
-            WHERE c.user_id = ?
+            SELECT AVG(cr.overall_score) as avg
+            FROM creator_reports cr
+            JOIN briefs b ON cr.brief_id = b.id
+            WHERE b.user_id = ?
         """, (user_id,))
-        avg_friction = cursor.fetchone()['avg'] or 0.0
+        avg_brand_fit = cursor.fetchone()['avg'] or 0.0
 
-        # Pass/Fail/Partial counts (only for this user)
+        # Legacy stats (kept for backwards compatibility, return 0)
         cursor.execute("""
             SELECT ar.status, COUNT(*) as count
             FROM analysis_results ar
@@ -1199,11 +1232,15 @@ class DatabaseManager:
         conn.close()
 
         return {
-            'total_cujs': total_cujs,
-            'total_videos': total_videos,
+            'total_briefs': total_briefs,
+            'total_creators': total_creators,
             'total_analyses': total_analyses,
             'total_cost': total_cost,
-            'avg_friction_score': avg_friction,
+            'avg_brand_fit_score': avg_brand_fit,
+            # Legacy fields for backwards compatibility
+            'total_cujs': 0,
+            'total_videos': 0,
+            'avg_friction_score': 0.0,
             'status_counts': status_counts
         }
 
@@ -1587,8 +1624,20 @@ class DatabaseManager:
             conn = self._get_connection()
             cursor = conn.cursor()
 
+            # Check if link already exists
             cursor.execute("""
-                INSERT OR IGNORE INTO brief_creators (brief_id, creator_id, status)
+                SELECT id FROM brief_creators
+                WHERE brief_id = ? AND creator_id = ?
+            """, (brief_id, creator_id))
+
+            existing = cursor.fetchone()
+            if existing:
+                conn.close()
+                print(f"Creator {creator_id} is already linked to brief {brief_id}")
+                return False
+
+            cursor.execute("""
+                INSERT INTO brief_creators (brief_id, creator_id, status)
                 VALUES (?, ?, ?)
             """, (brief_id, creator_id, status))
 
@@ -1597,6 +1646,8 @@ class DatabaseManager:
             return True
         except Exception as e:
             print(f"Error linking creator to brief: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
     def unlink_creator_from_brief(self, brief_id: int, creator_id: int) -> bool:

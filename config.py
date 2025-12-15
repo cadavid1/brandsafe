@@ -79,7 +79,7 @@ AVERAGE_PROMPT_TOKENS = 1000   # System prompt + CUJ description
 AVERAGE_RESPONSE_TOKENS = 500  # Expected JSON response
 
 # Database configuration
-DATABASE_PATH = "./data/uxr_mate.db"
+DATABASE_PATH = "./data/brandsafe.db"
 VIDEO_STORAGE_PATH = "./data/videos/"
 EXPORT_STORAGE_PATH = "./data/exports/"
 
@@ -207,7 +207,7 @@ ANALYSIS_TIERS = {
         "max_videos_to_analyze": 3,
         "max_video_duration_seconds": 600,  # 10 minutes
         "deep_research": False,
-        "estimated_cost_per_creator": 0.35,
+        "estimated_cost_per_creator": 0.08,  # Updated: 20 posts × 600 tokens = 12K input + 500 output + 3 video transcripts
     },
     "deep": {
         "name": "Deep Dive",
@@ -219,7 +219,7 @@ ANALYSIS_TIERS = {
         "max_video_duration_seconds": 600,  # 10 minutes
         "max_video_filesize_mb": 100,
         "deep_research": False,
-        "estimated_cost_per_creator": 3.50,
+        "estimated_cost_per_creator": 0.50,  # Updated: 50 posts analysis + 5 video transcripts
     },
     "deep_research": {
         "name": "Deep Research",
@@ -233,7 +233,7 @@ ANALYSIS_TIERS = {
         "deep_research": True,
         "deep_research_queries": ["demographics"],  # Can include 'background' for more comprehensive research
         "deep_research_cache_days": 90,  # Cache results for 90 days
-        "estimated_cost_per_creator": 6.00,  # ~$3.50 deep analysis + ~$1-2.50 Deep Research
+        "estimated_cost_per_creator": 2.00,  # Updated: ~$0.50 deep analysis + ~$1.50 average Deep Research cost
     }
 }
 

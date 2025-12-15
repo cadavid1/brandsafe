@@ -546,14 +546,26 @@ class InstagramClient(PlatformClient):
                 posts = []
                 post_count = 0
                 error_count = 0
-                max_errors = 5  # Stop after 5 consecutive errors
+                consecutive_errors = 0
+                max_consecutive_errors = 5  # Stop after 5 consecutive errors
+                max_total_errors = 20  # Allow more total errors if we get some successes
 
                 # Iterate through posts
                 for post in profile.get_posts():
-                    # Stop if too many errors (likely being blocked)
-                    if error_count >= max_errors:
-                        print(f"  [WARNING] Too many errors ({error_count}), stopping post fetch")
-                        print(f"  [INFO] Successfully fetched {post_count} posts before errors")
+                    # Stop if too many consecutive errors (likely being blocked)
+                    if consecutive_errors >= max_consecutive_errors:
+                        print(f"  [WARNING] Too many consecutive errors ({consecutive_errors}), stopping post fetch")
+                        if post_count > 0:
+                            print(f"  [INFO] Successfully fetched {post_count} posts before errors")
+                        else:
+                            print(f"  [ERROR] Unable to fetch any posts - Instagram may be blocking requests")
+                            print(f"  [SUGGESTION] Try again later or configure Instagram credentials in settings")
+                        break
+
+                    # Stop if too many total errors
+                    if error_count >= max_total_errors:
+                        print(f"  [WARNING] Too many total errors ({error_count}), stopping post fetch")
+                        print(f"  [INFO] Successfully fetched {post_count} posts")
                         break
 
                     # Stop if we have enough posts
@@ -599,20 +611,44 @@ class InstagramClient(PlatformClient):
                         })
 
                         post_count += 1
-                        error_count = 0  # Reset error count on success
+                        consecutive_errors = 0  # Reset consecutive error count on success
 
-                    except self.instaloader.exceptions.QueryReturnedForbiddenException:
+                    except self.instaloader.exceptions.QueryReturnedForbiddenException as e:
                         error_count += 1
-                        print(f"  [WARNING] 403 Forbidden on post (error {error_count}/{max_errors})")
-                        time.sleep(5)  # Wait longer after 403
+                        consecutive_errors += 1
+                        print(f"  [WARNING] 403 Forbidden - Instagram blocking request (consecutive: {consecutive_errors}/{max_consecutive_errors}, total: {error_count})")
+
+                        # Exponential backoff on 403s
+                        wait_time = min(30, 5 * consecutive_errors)
+                        time.sleep(wait_time)
                         continue
+
+                    except self.instaloader.exceptions.ConnectionException as e:
+                        error_count += 1
+                        consecutive_errors += 1
+                        print(f"  [WARNING] Connection error: {str(e)[:100]}")
+                        time.sleep(3)
+                        continue
+
                     except Exception as post_error:
                         error_count += 1
-                        print(f"  [WARNING] Error fetching post: {post_error}")
+                        consecutive_errors += 1
+                        error_msg = str(post_error)
+
+                        # Check for rate limiting indicators
+                        if "429" in error_msg or "rate limit" in error_msg.lower():
+                            print(f"  [WARNING] Rate limited by Instagram - waiting longer...")
+                            time.sleep(30)
+                        else:
+                            print(f"  [WARNING] Error fetching post: {error_msg[:100]}")
+                            time.sleep(3)
                         continue
 
                 if post_count > 0:
                     print(f"  [SUCCESS] Fetched {post_count} posts total")
+                elif error_count > 0:
+                    print(f"  [WARNING] No posts fetched due to {error_count} errors")
+
                 return posts
 
             except self.instaloader.exceptions.ProfileNotExistsException:
@@ -620,14 +656,33 @@ class InstagramClient(PlatformClient):
             except self.instaloader.exceptions.LoginRequiredException:
                 raise PlatformClientError(f"Instagram requires login to view posts from @{username}")
             except self.instaloader.exceptions.ConnectionException as e:
+                # If we get connection errors at the profile level, don't retry
+                error_msg = str(e)
+                if "403" in error_msg or "Forbidden" in error_msg:
+                    print(f"  [ERROR] Instagram blocked the request - please try again later or configure authentication")
+                    return []  # Return empty instead of raising to continue with other platforms
                 raise PlatformClientError(f"Instagram connection error: {e}")
             except KeyboardInterrupt:
                 print(f"  [INTERRUPTED] Stopping Instagram fetch, returning {post_count} posts")
                 return posts
             except Exception as e:
+                error_msg = str(e)
+                if "403" in error_msg or "Forbidden" in error_msg:
+                    print(f"  [ERROR] Instagram access denied - please configure Instagram credentials or try again later")
+                    return []  # Return empty instead of raising
                 raise PlatformClientError(f"Instagram error: {e}")
 
-        return self._retry_with_backoff(_fetch_posts)
+        # Override retry logic for Instagram - only retry on non-403 errors
+        try:
+            return _fetch_posts()
+        except PlatformClientError as e:
+            # Check if it's a 403/blocking error
+            error_msg = str(e)
+            if "403" in error_msg or "Forbidden" in error_msg or "blocked" in error_msg.lower():
+                print(f"  [ERROR] {e}")
+                return []  # Return empty list instead of failing
+            # For other errors, use standard retry logic
+            return self._retry_with_backoff(_fetch_posts)
 
 
 class TikTokClient(PlatformClient):

@@ -10,6 +10,28 @@ import io
 
 from storage import get_db
 
+def _debug_log(message: str):
+    """Print debug message only if debug mode is enabled"""
+    try:
+        db = get_db()
+        # Try to get user_id from session state if available
+        try:
+            import streamlit as st
+            if hasattr(st, 'session_state') and 'user_id' in st.session_state:
+                user_id = st.session_state.user_id
+            else:
+                # Fallback: check for any user with debug mode on
+                user_id = 1  # Default to first user for module-level imports
+        except:
+            user_id = 1
+
+        debug_mode = db.get_setting(user_id, "debug_mode", "false") == "true"
+        if debug_mode:
+            print(message)
+    except:
+        # If anything fails, don't show debug logs
+        pass
+
 # Import export libraries at module level
 try:
     from reportlab.lib.pagesizes import letter, A4
@@ -19,19 +41,19 @@ try:
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
     from reportlab.lib.enums import TA_CENTER, TA_LEFT
     REPORTLAB_AVAILABLE = True
-    print("[DEBUG] reportlab imported successfully")
+    _debug_log("[DEBUG] reportlab imported successfully")
 except ImportError as e:
     REPORTLAB_AVAILABLE = False
     print(f"[WARN] reportlab import failed: {e}")
     import sys
-    print(f"[DEBUG] sys.path: {sys.path}")
+    _debug_log(f"[DEBUG] sys.path: {sys.path}")
 
 try:
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment
     from openpyxl.utils.dataframe import dataframe_to_rows
     OPENPYXL_AVAILABLE = True
-    print("[DEBUG] openpyxl imported successfully")
+    _debug_log("[DEBUG] openpyxl imported successfully")
 except ImportError as e:
     OPENPYXL_AVAILABLE = False
     print(f"[WARN] openpyxl import failed: {e}")

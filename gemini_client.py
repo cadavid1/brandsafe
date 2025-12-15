@@ -85,6 +85,63 @@ class GeminiClient:
         except Exception as e:
             raise GeminiAPIError(f"Video upload failed: {str(e)}")
 
+    def analyze_content(
+        self,
+        prompt: str,
+        system_instruction: str = None,
+        response_type: str = "json",
+        model_name: str = "gemini-2.0-flash-exp"
+    ) -> Dict:
+        """
+        Analyze text content with Gemini model
+
+        Args:
+            prompt: Analysis prompt
+            system_instruction: Optional system instruction for the model
+            response_type: Response format ("json" or "text")
+            model_name: Name of the model to use
+
+        Returns:
+            Analysis result as dictionary
+
+        Raises:
+            GeminiAPIError: If analysis fails
+        """
+        try:
+            response_mime_type = "application/json" if response_type == "json" else "text/plain"
+
+            # Create model
+            model_config = {
+                "model_name": model_name,
+                "generation_config": {"response_mime_type": response_mime_type}
+            }
+
+            if system_instruction:
+                model_config["system_instruction"] = system_instruction
+
+            model = genai.GenerativeModel(**model_config)
+
+            # Generate content
+            response = model.generate_content(prompt)
+
+            # Parse response
+            if response_type == "json":
+                try:
+                    return json.loads(response.text)
+                except json.JSONDecodeError:
+                    # Try to extract JSON from text
+                    text = response.text.strip()
+                    if text.startswith("```json"):
+                        text = text[7:]
+                    if text.endswith("```"):
+                        text = text[:-3]
+                    return json.loads(text.strip())
+            else:
+                return {"text": response.text}
+
+        except Exception as e:
+            raise GeminiAPIError(f"Content analysis failed: {str(e)}")
+
     def analyze_video(
         self,
         video_file: any,

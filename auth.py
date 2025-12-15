@@ -190,7 +190,7 @@ class AuthManager:
 
         # Demo mode button (prominent placement)
         st.info("👋 **New here?** Try the app without creating an account")
-        if st.button("🎭 Try Demo Mode", type="primary", use_container_width=True):
+        if st.button("🎭 Try Demo Mode", type="primary", width='stretch'):
             success, message = self.demo_login()
             if success:
                 st.success(message)
@@ -222,7 +222,7 @@ class AuthManager:
         with st.form("login_form"):
             username = st.text_input("Username", key="login_username")
             password = st.text_input("Password", type="password", key="login_password")
-            submit = st.form_submit_button("Login", type="primary", use_container_width=True)
+            submit = st.form_submit_button("Login", type="primary", width='stretch')
 
             if submit:
                 success, message = self.login(username, password)
@@ -243,7 +243,7 @@ class AuthManager:
             email = st.text_input("Email (optional)", key="register_email")
             full_name = st.text_input("Full Name (optional)", key="register_full_name")
 
-            submit = st.form_submit_button("Register", type="primary", use_container_width=True)
+            submit = st.form_submit_button("Register", type="primary", width='stretch')
 
             if submit:
                 # Validate passwords match
@@ -267,7 +267,7 @@ class AuthManager:
                 st.sidebar.caption(st.session_state.user_full_name)
             st.sidebar.caption(st.session_state.user_email)
 
-            if st.sidebar.button("Logout", use_container_width=True):
+            if st.sidebar.button("Logout", width='stretch'):
                 self.logout()
                 st.rerun()
 
