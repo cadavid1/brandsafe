@@ -53,6 +53,34 @@ MODELS = {
         "best_for": "Testing latest features, real-time capabilities",
         "supports_video": True,
     },
+    "gemini-2.5-flash-image": {
+        "display_name": "Gemini 2.5 Flash Image (Image Generation)",
+        "cost_per_m_tokens_input": 0.30,
+        "cost_per_m_tokens_output": 30.00,
+        "tokens_per_image": 1290,
+        "cost_per_image": 0.039,
+        "best_for": "Campaign concept images, visual mockups",
+        "supports_video": False,
+        "supports_image_generation": True,
+    },
+    "veo-3.1-generate-preview": {
+        "display_name": "Veo 3.1 (Video Generation)",
+        "cost_per_second": 0.15,
+        "max_duration_seconds": 8,
+        "cost_per_video": 1.20,
+        "best_for": "High-quality campaign videos with synchronized audio",
+        "supports_video": True,
+        "supports_video_generation": True,
+    },
+    "veo-3.1-fast-generate-preview": {
+        "display_name": "Veo 3.1 Fast (Video Generation)",
+        "cost_per_second": 0.15,
+        "max_duration_seconds": 8,
+        "cost_per_video": 1.20,
+        "best_for": "Faster campaign videos with synchronized audio",
+        "supports_video": True,
+        "supports_video_generation": True,
+    }
 
 }
 
@@ -82,6 +110,7 @@ AVERAGE_RESPONSE_TOKENS = 500  # Expected JSON response
 DATABASE_PATH = "./data/brandsafe.db"
 VIDEO_STORAGE_PATH = "./data/videos/"
 EXPORT_STORAGE_PATH = "./data/exports/"
+CAMPAIGN_ASSETS_PATH = "./data/campaign_assets/"
 
 # Google Drive configuration
 DRIVE_VIDEO_STORAGE_PATH = "./data/drive_videos/"  # Local cache for Drive videos
@@ -284,7 +313,7 @@ Output JSON format:
   "brand_safety_score": number (1-5),
   "sentiment": "positive" | "neutral" | "negative" | "mixed",
   "authenticity_score": number (1-5),
-  "natural_alignment_score": number (1-5),
+  "natural_alignment_score": number (1-5),  // REQUIRED: Must be provided based on brand mention analysis
   "audience_engagement_quality": "high" | "medium" | "low",
   "production_quality": "professional" | "semi-professional" | "casual",
   "key_observations": ["observation1", "observation2", ...],
@@ -296,7 +325,14 @@ Output JSON format:
     "category_discussions": number,
     "mention_examples": ["example1", "example2", ...]
   }
-}"""
+}
+
+CRITICAL REQUIREMENTS:
+- natural_alignment_score is REQUIRED and must be a number between 1 and 5
+- brand_mentions object is REQUIRED with all fields (direct_brand_mentions, competitor_mentions, category_discussions, mention_examples)
+- All scores must be numeric values, not strings or null
+- Use the full 1-5 scale: don't default to 3.0 unless truly neutral
+"""
 
 
 def get_model_list():
@@ -353,3 +389,53 @@ def format_cost(cost):
     if cost < 0.01:
         return f"${cost:.4f}"
     return f"${cost:.2f}"
+
+
+def estimate_image_generation_cost(num_images: int = 1, model_id: str = "gemini-2.5-flash-image"):
+    """
+    Estimate the cost of generating images
+
+    Args:
+        num_images: Number of images to generate
+        model_id: Model to use for generation
+
+    Returns:
+        dict with cost breakdown
+    """
+    model_info = get_model_info(model_id)
+
+    cost_per_image = model_info.get("cost_per_image", 0.039)
+    total_cost = cost_per_image * num_images
+
+    return {
+        "num_images": num_images,
+        "cost_per_image": cost_per_image,
+        "total_cost": total_cost,
+        "model": model_id,
+        "model_display_name": model_info["display_name"]
+    }
+
+
+def estimate_video_generation_cost(duration_seconds: int = 8, model_id: str = "veo-3.1-fast-generate-preview"):
+    """
+    Estimate the cost of generating a video
+
+    Args:
+        duration_seconds: Video duration in seconds
+        model_id: Model to use for generation
+
+    Returns:
+        dict with cost breakdown
+    """
+    model_info = get_model_info(model_id)
+
+    cost_per_second = model_info.get("cost_per_second", 0.15)
+    total_cost = cost_per_second * duration_seconds
+
+    return {
+        "duration_seconds": duration_seconds,
+        "cost_per_second": cost_per_second,
+        "total_cost": total_cost,
+        "model": model_id,
+        "model_display_name": model_info["display_name"]
+    }

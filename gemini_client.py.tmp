@@ -6,8 +6,6 @@ import json
 import time
 from typing import Dict, Optional, Callable
 import google.generativeai as genai
-from google import genai as genai_client
-from google.genai import types
 from config import (
     MAX_RETRIES,
     RETRY_DELAY_SECONDS,
@@ -35,8 +33,6 @@ class GeminiClient:
 
         self.api_key = api_key
         genai.configure(api_key=api_key)
-        # Initialize client for video generation (Veo API)
-        self.client = genai_client.Client(api_key=api_key)
 
     def upload_video(
         self,
@@ -317,7 +313,7 @@ class GeminiClient:
         progress_callback: Optional[Callable[[str, float], None]] = None
     ) -> Dict:
         """
-        Generate image using Gemini image generation models (Nano Banana)
+        Generate image using Gemini image generation models
 
         Args:
             prompt: Text description of desired image
@@ -336,24 +332,31 @@ class GeminiClient:
             if progress_callback:
                 progress_callback("Initializing image generation", 0.1)
 
-            # Build config using types for Nano Banana
-            image_config = types.ImageConfig(
-                aspect_ratio=aspect_ratio,
-            )
+            # Create model with image generation configuration
+            model = genai.GenerativeModel(model_name=model_name)
 
-            config = types.GenerateContentConfig(
-                response_modalities=["IMAGE"],
-                image_config=image_config
-            )
+            # Build content parts
+            content_parts = [prompt]
+
+            # Add reference images if provided
+            if reference_images:
+                for img_path in reference_images:
+                    try:
+                        img_file = genai.upload_file(path=img_path)
+                        content_parts.append(img_file)
+                    except Exception as e:
+                        print(f"Warning: Could not upload reference image {img_path}: {e}")
 
             if progress_callback:
                 progress_callback("Generating image", 0.3)
 
-            # Generate image using google.genai client
-            response = self.client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-                config=config
+            # Generate image
+            response = model.generate_content(
+                content_parts,
+                generation_config={
+                    "response_modalities": ["image"],
+                    "aspect_ratio": aspect_ratio
+                }
             )
 
             if progress_callback:
@@ -388,25 +391,23 @@ class GeminiClient:
                 "cost": cost
             }
 
-        except GeminiAPIError:
-            raise
         except Exception as e:
             raise GeminiAPIError(f"Image generation failed: {str(e)}")
 
     def generate_video(
         self,
         prompt: str,
-        model_name: str = "veo-3.1-fast-generate-preview",
+        model_name: str = "veo-3.1-fast",
         duration_seconds: int = 8,
         resolution: str = "720p",
         reference_images: list = None,
         progress_callback: Optional[Callable[[str, float], None]] = None
     ) -> Dict:
         """
-        Generate video using Veo 3.1 video generation models
+        Generate video using Veo video generation models
 
         Args:
-            prompt: Text description of desired video (should include Subject, Action, Style, Camera, Ambiance)
+            prompt: Text description of desired video
             model_name: Video generation model to use
             duration_seconds: Video duration (max 8 seconds)
             resolution: Video resolution (720p or 1080p)
@@ -423,140 +424,84 @@ class GeminiClient:
             if progress_callback:
                 progress_callback("Initializing video generation", 0.05)
 
-            # Map resolution to aspect ratio
-            aspect_ratio = "16:9"  # Default
-            if resolution == "1080p":
-                aspect_ratio = "16:9"
-            elif resolution == "720p":
-                aspect_ratio = "16:9"
+            # Create model
+            model = genai.GenerativeModel(model_name=model_name)
 
-            # Build config for Veo 3.1
-            config = {
-                "aspect_ratio": aspect_ratio,
-                "resolution": resolution,
-                "duration_seconds": str(duration_seconds)
-            }
+            # Build content parts
+            content_parts = [prompt]
 
             # Add reference images if provided
             if reference_images:
-                # Upload reference images first
-                uploaded_files = []
                 for img_path in reference_images:
                     try:
                         img_file = genai.upload_file(path=img_path)
-                        uploaded_files.append(img_file)
+                        content_parts.append(img_file)
                     except Exception as e:
                         print(f"Warning: Could not upload reference image {img_path}: {e}")
-
-                if uploaded_files:
-                    config["reference_images"] = uploaded_files
 
             if progress_callback:
                 progress_callback("Submitting video generation request", 0.1)
 
-            # Generate video using Veo 3.1 API with the new google.genai client
-            # Build config using types
-            video_config = types.GenerateVideosConfig(
-                aspect_ratio=aspect_ratio,
-                resolution=resolution,
+            # Generate video
+            response = model.generate_content(
+                content_parts,
+                generation_config={
+                    "response_modalities": ["video"],
+                    "duration_seconds": duration_seconds,
+                    "resolution": resolution
+                }
             )
 
-            operation = self.client.models.generate_videos(
-                model=model_name,
-                prompt=prompt,
-                config=video_config
-            )
+            # Video generation may be async - poll for completion
+            if hasattr(response, 'state'):
+                poll_count = 0
+                max_polls = 60  # 5 minutes max (5 second intervals)
 
-            if progress_callback:
-                progress_callback("Video generation in progress (this takes 2-5 minutes)", 0.15)
+                while response.state.name == "PROCESSING" and poll_count < max_polls:
+                    progress = 0.1 + (0.8 * (poll_count / max_polls))
+                    if progress_callback:
+                        progress_callback(f"Generating video ({poll_count * 5}s elapsed)", progress)
 
-            # Poll for completion
-            poll_count = 0
-            max_polls = 60  # 10 minutes max (10 second intervals)
-
-            while operation.done is not True:
-                if poll_count >= max_polls:
-                    raise GeminiAPIError("Video generation timed out after 10 minutes")
-
-                poll_count += 1
-                elapsed_seconds = poll_count * 10
-                progress = 0.15 + (0.7 * min(poll_count / 30, 1.0))  # Progress up to 0.85
-
-                if progress_callback:
-                    progress_callback(f"Generating video ({elapsed_seconds}s elapsed)", progress)
-
-                time.sleep(10)
-
-                # Refresh operation status
-                try:
-                    operation = self.client.operations.get(operation)
-
-                    # Check for errors during generation
-                    if hasattr(operation, 'error') and operation.error:
-                        raise GeminiAPIError(f"Video generation failed during polling: {operation.error}")
-
-                except GeminiAPIError:
-                    raise
-                except Exception as e:
-                    raise GeminiAPIError(f"Failed to check operation status: {str(e)}")
-
-            # Check if operation succeeded
-            if hasattr(operation, 'error') and operation.error:
-                raise GeminiAPIError(f"Video generation failed: {operation.error}")
-
-            if progress_callback:
-                progress_callback("Downloading generated video", 0.9)
-
-            # Extract video from operation response
-            if not hasattr(operation, 'response') or not operation.response:
-                raise GeminiAPIError("No response in completed operation")
-
-            if not hasattr(operation.response, 'generated_videos') or not operation.response.generated_videos:
-                raise GeminiAPIError("No generated videos in response")
-
-            # Get first generated video
-            generated_video = operation.response.generated_videos[0]
-
-            # Download video data - the API downloads it to the video object
-            try:
-                self.client.files.download(file=generated_video.video)
-            except Exception as e:
-                raise GeminiAPIError(f"Failed to download video: {str(e)}")
-
-            # Save to a temporary location first to read the bytes
-            import tempfile
-            import os
-
-            with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp_file:
-                temp_path = tmp_file.name
-
-            try:
-                generated_video.video.save(temp_path)
-
-                # Read the video data as bytes
-                with open(temp_path, 'rb') as f:
-                    video_data = f.read()
-
-            except Exception as e:
-                raise GeminiAPIError(f"Failed to save video to temp file: {str(e)}")
-            finally:
-                # Clean up temp file
-                if os.path.exists(temp_path):
+                    time.sleep(5)
+                    # Re-fetch response status
                     try:
-                        os.unlink(temp_path)
+                        response = genai.get_generation(response.id)
                     except:
-                        pass
+                        # If polling not supported, break and check response
+                        break
+
+                    poll_count += 1
+
+                if response.state.name == "FAILED":
+                    raise GeminiAPIError(f"Video generation failed: {response.state}")
+
+            if progress_callback:
+                progress_callback("Processing video response", 0.9)
+
+            # Extract video data from response
+            if not response.parts:
+                raise GeminiAPIError("No video generated in response")
+
+            video_data = None
+            for part in response.parts:
+                if hasattr(part, 'inline_data'):
+                    video_data = part.inline_data.data
+                    break
+                elif hasattr(part, 'file_data'):
+                    # Download from file reference
+                    file_ref = part.file_data
+                    video_file = genai.get_file(file_ref.uri)
+                    video_data = video_file.read()
+                    break
 
             if not video_data:
-                raise GeminiAPIError("Could not download video data")
+                raise GeminiAPIError("Could not extract video data from response")
 
             if progress_callback:
                 progress_callback("Video generation complete", 1.0)
 
-            # Calculate cost based on model
-            from config import MODELS
-            model_config = MODELS.get(model_name, {})
-            cost_per_second = model_config.get('cost_per_second', 0.15)
+            # Calculate cost
+            cost_per_second = 0.15
             cost = cost_per_second * duration_seconds
 
             return {
@@ -565,15 +510,12 @@ class GeminiClient:
                     "model": model_name,
                     "duration_seconds": duration_seconds,
                     "resolution": resolution,
-                    "aspect_ratio": aspect_ratio,
                     "prompt_length": len(prompt)
                 },
                 "cost": cost,
                 "thumbnail_data": None  # Will be generated from video file
             }
 
-        except GeminiAPIError:
-            raise
         except Exception as e:
             raise GeminiAPIError(f"Video generation failed: {str(e)}")
 
@@ -662,14 +604,13 @@ class GeminiClient:
 
         for attempt in range(MAX_RETRIES):
             try:
-                result = self.generate_video(
+                return self.generate_video(
                     prompt=prompt,
                     model_name=model_name,
                     duration_seconds=duration_seconds,
                     resolution=resolution,
                     progress_callback=progress_callback
                 )
-                return result
 
             except Exception as e:
                 last_error = e

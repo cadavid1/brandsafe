@@ -51,6 +51,36 @@ def _debug_log_demographics(message: str, enabled: bool = None):
         print(f"[{timestamp}] [DEMOGRAPHICS] {message}")
 
 
+def _debug_log_alignment(message: str, enabled: bool = None):
+    """
+    Print debug message for natural alignment scoring
+
+    Args:
+        message: Debug message to print
+        enabled: Override for debug state (if None, checks database)
+    """
+    if enabled is None:
+        try:
+            db = get_db()
+            # Try to get user_id from session state if available
+            try:
+                import streamlit as st
+                if hasattr(st, 'session_state') and 'user_id' in st.session_state:
+                    user_id = st.session_state.user_id
+                else:
+                    user_id = 1
+            except:
+                user_id = 1
+
+            enabled = db.get_setting(user_id, "alignment_debug", "false") == "true"
+        except:
+            return
+
+    if enabled:
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        print(f"[{timestamp}] [ALIGNMENT] {message}")
+
+
 class CreatorAnalysisError(Exception):
     """Custom exception for creator analysis errors"""
     pass
@@ -500,6 +530,60 @@ Provide your analysis in the specified JSON format.
                 if '_usage' in result:
                     self._last_token_usage = result['_usage']
                     print(f"  [TOKENS] Input: {result['_usage']['prompt_tokens']}, Output: {result['_usage']['candidates_tokens']}, Total: {result['_usage']['total_tokens']}")
+
+                # Log raw Gemini response for alignment debugging
+                _debug_log_alignment(f"=== Raw Gemini Response Analysis ===")
+                _debug_log_alignment(f"Brand context: {brand_context[:100]}...")
+                _debug_log_alignment(f"Number of posts analyzed: {len(content_summary)}")
+
+                # Log all scores returned
+                _debug_log_alignment(f"Brand Safety Score: {result.get('brand_safety_score', 'MISSING')}")
+                _debug_log_alignment(f"Authenticity Score: {result.get('authenticity_score', 'MISSING')}")
+                _debug_log_alignment(f"Natural Alignment Score: {result.get('natural_alignment_score', 'MISSING')}")
+
+                # Log brand mentions data
+                brand_mentions = result.get('brand_mentions', {})
+                if brand_mentions:
+                    _debug_log_alignment(f"Brand Mentions Data:")
+                    _debug_log_alignment(f"  - Direct mentions: {brand_mentions.get('direct_brand_mentions', 0)}")
+                    _debug_log_alignment(f"  - Competitor mentions: {brand_mentions.get('competitor_mentions', 0)}")
+                    _debug_log_alignment(f"  - Category discussions: {brand_mentions.get('category_discussions', 0)}")
+                    _debug_log_alignment(f"  - Examples: {brand_mentions.get('mention_examples', [])}")
+                else:
+                    _debug_log_alignment(f"⚠️ WARNING: No brand_mentions object in response")
+
+                # Warn if natural_alignment_score is missing
+                if 'natural_alignment_score' not in result:
+                    _debug_log_alignment(f"❌ CRITICAL: natural_alignment_score missing from Gemini response")
+                    _debug_log_alignment(f"Full response keys: {list(result.keys())}")
+
+                # Validate all scores are present and in valid ranges
+                required_scores = ['brand_safety_score', 'authenticity_score', 'natural_alignment_score']
+                for score_key in required_scores:
+                    if score_key not in result:
+                        print(f"  [WARNING] Missing {score_key} in Gemini response")
+                        _debug_log_alignment(f"❌ Missing required score: {score_key}")
+                    else:
+                        score_value = result[score_key]
+                        if not isinstance(score_value, (int, float)):
+                            print(f"  [ERROR] {score_key} has invalid type: {type(score_value)}")
+                            _debug_log_alignment(f"❌ {score_key} invalid type: {type(score_value)}")
+                        elif score_value < 1 or score_value > 5:
+                            print(f"  [ERROR] {score_key} out of range: {score_value} (must be 1-5)")
+                            _debug_log_alignment(f"❌ {score_key} out of range: {score_value}")
+
+                # Validate brand_mentions structure
+                if 'brand_mentions' in result:
+                    bm = result['brand_mentions']
+                    if not isinstance(bm, dict):
+                        print(f"  [ERROR] brand_mentions is not a dictionary: {type(bm)}")
+                        _debug_log_alignment(f"❌ brand_mentions invalid type: {type(bm)}")
+                    else:
+                        expected_keys = ['direct_brand_mentions', 'competitor_mentions', 'category_discussions', 'mention_examples']
+                        for key in expected_keys:
+                            if key not in bm:
+                                _debug_log_alignment(f"⚠️ Missing brand_mentions.{key}")
+
                 return result
             else:
                 return {
@@ -1011,16 +1095,67 @@ Focus on visual elements, tone, and overall presentation quality."""
         # Get scores from content analysis
         brand_safety = content_analysis.get('brand_safety_score', 3.0)
         authenticity = content_analysis.get('authenticity_score', 3.0)
-        natural_alignment = content_analysis.get('natural_alignment_score', 3.0)
+        natural_alignment_raw = content_analysis.get('natural_alignment_score')
+
+        # Validate and log natural alignment score
+        _debug_log_alignment(f"=== Natural Alignment Score Processing ===")
+        _debug_log_alignment(f"Raw value from Gemini: {natural_alignment_raw}")
+
+        if natural_alignment_raw is None:
+            natural_alignment = 3.0
+            _debug_log_alignment(f"⚠️ Score was None, defaulting to 3.0")
+            print(f"  [WARNING] Natural alignment score missing from content analysis - defaulting to 3.0")
+        elif not isinstance(natural_alignment_raw, (int, float)):
+            natural_alignment = 3.0
+            _debug_log_alignment(f"❌ Invalid type: {type(natural_alignment_raw)}, defaulting to 3.0")
+            print(f"  [ERROR] Natural alignment score has invalid type: {type(natural_alignment_raw)}")
+        else:
+            natural_alignment = float(natural_alignment_raw)
+            _debug_log_alignment(f"✓ Valid numeric value: {natural_alignment}")
+
+            # Validate range
+            if natural_alignment < 1.0 or natural_alignment > 5.0:
+                _debug_log_alignment(f"❌ Out of range (1-5): {natural_alignment}, clamping")
+                print(f"  [ERROR] Natural alignment score out of range: {natural_alignment} (must be 1-5)")
+                natural_alignment = max(1.0, min(5.0, natural_alignment))
+                _debug_log_alignment(f"Clamped to: {natural_alignment}")
+
+        _debug_log_alignment(f"Final score used: {natural_alignment}")
+
+        # Get custom weights from settings (or use defaults)
+        weight_brand_safety = float(self.db.get_setting(self.user_id, "weight_brand_safety", "0.3"))
+        weight_authenticity = float(self.db.get_setting(self.user_id, "weight_authenticity", "0.25"))
+        weight_natural_alignment = float(self.db.get_setting(self.user_id, "weight_natural_alignment", "0.25"))
+        weight_reach = float(self.db.get_setting(self.user_id, "weight_reach", "0.2"))
+
+        # Validate weights sum to 1.0 (within tolerance)
+        weight_sum = weight_brand_safety + weight_authenticity + weight_natural_alignment + weight_reach
+        if abs(weight_sum - 1.0) > 0.01:
+            print(f"  [WARNING] Custom weights sum to {weight_sum:.2f}, not 1.0. Using defaults.")
+            _debug_log_alignment(f"Invalid weight sum: {weight_sum}, reverting to defaults")
+            weight_brand_safety = 0.3
+            weight_authenticity = 0.25
+            weight_natural_alignment = 0.25
+            weight_reach = 0.2
+        else:
+            print(f"  [INFO] Using custom weights: Safety={weight_brand_safety}, Auth={weight_authenticity}, Align={weight_natural_alignment}, Reach={weight_reach}")
+            _debug_log_alignment(f"Custom weights: Safety={weight_brand_safety}, Auth={weight_authenticity}, Align={weight_natural_alignment}, Reach={weight_reach}")
 
         # Calculate brand fit score (1-5 scale)
         # Weighted average of different factors
         brand_fit_score = (
-            (brand_safety * 0.3) +  # 30% weight on brand safety
-            (authenticity * 0.25) +  # 25% weight on authenticity
-            (natural_alignment * 0.25) +  # 25% weight on natural alignment
-            (min(5, total_followers / 100000) * 0.2)  # 20% weight on reach (scaled)
+            (brand_safety * weight_brand_safety) +
+            (authenticity * weight_authenticity) +
+            (natural_alignment * weight_natural_alignment) +
+            (min(5, total_followers / 100000) * weight_reach)
         )
+
+        _debug_log_alignment(f"=== Brand Fit Score Calculation ===")
+        _debug_log_alignment(f"Brand Safety: {brand_safety} × {weight_brand_safety} = {brand_safety * weight_brand_safety:.2f}")
+        _debug_log_alignment(f"Authenticity: {authenticity} × {weight_authenticity} = {authenticity * weight_authenticity:.2f}")
+        _debug_log_alignment(f"Natural Alignment: {natural_alignment} × {weight_natural_alignment} = {natural_alignment * weight_natural_alignment:.2f}")
+        _debug_log_alignment(f"Reach: {min(5, total_followers / 100000)} × {weight_reach} = {min(5, total_followers / 100000) * weight_reach:.2f}")
+        _debug_log_alignment(f"Final Brand Fit Score: {brand_fit_score:.1f}/5.0")
 
         # Identify strengths
         strengths = content_analysis.get('partnership_strengths', [])

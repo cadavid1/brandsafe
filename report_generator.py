@@ -38,7 +38,7 @@ try:
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import inch
     from reportlab.lib import colors
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, HRFlowable
     from reportlab.lib.enums import TA_CENTER, TA_LEFT
     REPORTLAB_AVAILABLE = True
     _debug_log("[DEBUG] reportlab imported successfully")
@@ -1029,7 +1029,7 @@ Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${(
                     markdown += f"- **Followers:** {followers}\n"
                     markdown += f"- **Engagement Rate:** {engagement}\n"
                     markdown += f"- **Total Posts:** {total_posts:,}\n"
-                    markdown += f"- **Profile:** {acc['profile_url']}\n\n"
+                    markdown += f"- **Profile:** [View Profile]({acc['profile_url']})\n\n"
 
                     # Get demographics if available
                     demographics = self.db.get_demographics_data(int(acc['id']))
@@ -1112,6 +1112,83 @@ Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${(
 - **Report Generated:** {datetime.now().strftime("%B %d, %Y at %I:%M %p")}
 
 *Generated with BrandSafe Creator Analysis Platform*
+
+---
+
+## Debug & Metadata Information
+
+*This section contains technical details about the analysis. It can be removed if not needed.*
+
+### General Information
+
+"""
+
+        # Get brand fit score weights
+        try:
+            user_id = 1
+            weight_brand_safety = float(self.db.get_setting(user_id, "weight_brand_safety", "0.3"))
+            weight_authenticity = float(self.db.get_setting(user_id, "weight_authenticity", "0.25"))
+            weight_natural_alignment = float(self.db.get_setting(user_id, "weight_natural_alignment", "0.25"))
+            weight_reach = float(self.db.get_setting(user_id, "weight_reach", "0.2"))
+        except:
+            weight_brand_safety = 0.3
+            weight_authenticity = 0.25
+            weight_natural_alignment = 0.25
+            weight_reach = 0.2
+
+        markdown += f"""
+| Parameter | Value |
+|-----------|-------|
+| Report Generation Date | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} |
+| Brief ID | {brief_id} |
+| Brief Name | {brief['name']} |
+| Total Creators Analyzed | {len(reports_df)} |
+| Average Score | {avg_score:.2f} |
+| Total Cost | ${total_cost:.4f} |
+
+### Brand Fit Score Weights
+
+| Weight Component | Value | Percentage |
+|------------------|-------|------------|
+| Brand Safety | {weight_brand_safety:.2f} | {weight_brand_safety*100:.0f}% |
+| Authenticity | {weight_authenticity:.2f} | {weight_authenticity*100:.0f}% |
+| Natural Alignment | {weight_natural_alignment:.2f} | {weight_natural_alignment*100:.0f}% |
+| Reach | {weight_reach:.2f} | {weight_reach*100:.0f}% |
+| **Total** | **{weight_brand_safety + weight_authenticity + weight_natural_alignment + weight_reach:.2f}** | **{(weight_brand_safety + weight_authenticity + weight_natural_alignment + weight_reach)*100:.0f}%** |
+
+**Formula:** Brand Fit Score = (Brand Safety × {weight_brand_safety:.2f}) + (Authenticity × {weight_authenticity:.2f}) + (Natural Alignment × {weight_natural_alignment:.2f}) + (Reach × {weight_reach:.2f})
+
+### Per-Creator Debug Information
+
+"""
+
+        # Add per-creator debug info
+        for idx, (_, row) in enumerate(reports_df.iterrows(), 1):
+            markdown += f"""
+#### Creator {idx}: {row['creator_name']}
+
+| Parameter | Value |
+|-----------|-------|
+| Creator ID | {row['creator_id']} |
+| Creator Name | {row['creator_name']} |
+| Model Used | {row.get('model_used', 'N/A')} |
+| Analysis Cost | ${(row.get('analysis_cost', 0.0) or 0.0):.4f} |
+| Generated At | {row.get('generated_at', 'N/A')} |
+| Report ID | {row.get('id', 'N/A')} |
+
+"""
+
+        # System info
+        markdown += """
+### System Information
+
+- **Export Format:** Markdown
+- **File Extension:** .md
+- **Rendering:** GitHub-flavored Markdown compatible
+
+---
+
+*End of Report*
 """
 
         return markdown
@@ -1354,8 +1431,76 @@ Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${(
                         'N/A', 'N/A', 'N/A', 'N/A', 'N/A', 'N/A', 'No data'
                     ])
 
+        # Sheet 6: Debug & Metadata
+        ws_debug = wb.create_sheet("Debug & Metadata")
+
+        # Add header
+        ws_debug['A1'] = "Debug & Metadata Information"
+        ws_debug['A1'].font = Font(size=14, bold=True)
+        ws_debug['A2'] = "This sheet contains technical details about the analysis. It can be removed if not needed."
+        ws_debug['A2'].font = Font(size=10, italic=True)
+
+        # Get brand fit score weights from user settings
+        try:
+            user_id = 1  # Default user
+            weight_brand_safety = float(self.db.get_setting(user_id, "weight_brand_safety", "0.3"))
+            weight_authenticity = float(self.db.get_setting(user_id, "weight_authenticity", "0.25"))
+            weight_natural_alignment = float(self.db.get_setting(user_id, "weight_natural_alignment", "0.25"))
+            weight_reach = float(self.db.get_setting(user_id, "weight_reach", "0.2"))
+        except:
+            weight_brand_safety = 0.3
+            weight_authenticity = 0.25
+            weight_natural_alignment = 0.25
+            weight_reach = 0.2
+
+        # Headers
+        debug_headers = ['Parameter', 'Value']
+        ws_debug.append([])  # Empty row
+        ws_debug.append([])  # Empty row
+        ws_debug.append(debug_headers)
+
+        # Style headers
+        for cell in ws_debug[4]:
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill(start_color="666666", end_color="666666", fill_type="solid")
+            cell.font = Font(bold=True, color="FFFFFF")
+
+        # Add general debug info
+        ws_debug.append(['Report Generation Date', datetime.now().strftime('%Y-%m-%d %H:%M:%S')])
+        ws_debug.append(['Brief ID', brief_id])
+        ws_debug.append(['Brief Name', brief['name']])
+        ws_debug.append(['Total Creators Analyzed', len(reports_df)])
+        ws_debug.append(['Average Score', f"{avg_score:.2f}"])
+        ws_debug.append(['Total Cost', f"${total_cost:.4f}"])
+        ws_debug.append([])  # Empty row
+
+        # Add brand fit score weights
+        ws_debug.append(['Brand Fit Score Weights', ''])
+        ws_debug.append(['  Brand Safety Weight', f"{weight_brand_safety:.2f} ({weight_brand_safety*100:.0f}%)"])
+        ws_debug.append(['  Authenticity Weight', f"{weight_authenticity:.2f} ({weight_authenticity*100:.0f}%)"])
+        ws_debug.append(['  Natural Alignment Weight', f"{weight_natural_alignment:.2f} ({weight_natural_alignment*100:.0f}%)"])
+        ws_debug.append(['  Reach Weight', f"{weight_reach:.2f} ({weight_reach*100:.0f}%)"])
+        ws_debug.append(['  Total Weight Sum', f"{weight_brand_safety + weight_authenticity + weight_natural_alignment + weight_reach:.2f}"])
+        ws_debug.append([])  # Empty row
+
+        # Add per-creator debug info
+        for idx, (_, row) in enumerate(reports_df.iterrows(), 1):
+            ws_debug.append([f'Creator {idx} - ID', row['creator_id']])
+            ws_debug.append([f'Creator {idx} - Name', row['creator_name']])
+            ws_debug.append([f'Creator {idx} - Model Used', row.get('model_used', 'N/A')])
+            ws_debug.append([f'Creator {idx} - Analysis Cost', f"${(row.get('analysis_cost', 0.0) or 0.0):.4f}"])
+            ws_debug.append([f'Creator {idx} - Generated At', str(row.get('generated_at', 'N/A'))])
+            ws_debug.append([f'Creator {idx} - Report ID', row.get('id', 'N/A')])
+            ws_debug.append([])  # Empty row between creators
+
+        # Add system info
+        ws_debug.append(['System Information', ''])
+        ws_debug.append(['Python Package', 'openpyxl'])
+        ws_debug.append(['Export Format', 'Excel (XLSX)'])
+        ws_debug.append(['Sheets', '6 (Summary, Comparison, Details, Posts, Demographics, Debug)'])
+
         # Adjust column widths
-        for ws in [ws_summary, ws_comparison, ws_details, ws_posts, ws_demographics]:
+        for ws in [ws_summary, ws_comparison, ws_details, ws_posts, ws_demographics, ws_debug]:
             for column in ws.columns:
                 max_length = 0
                 column_letter = column[0].column_letter
@@ -1404,11 +1549,11 @@ Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${(
         avg_score = reports_df['overall_score'].fillna(0).mean()
         total_cost = reports_df['analysis_cost'].fillna(0).sum()
 
-        # Create PDF
+        # Create PDF with page numbers
         buffer = io.BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=letter,
                                 rightMargin=72, leftMargin=72,
-                                topMargin=72, bottomMargin=18)
+                                topMargin=60, bottomMargin=48)
 
         # Container for the 'Flowable' objects
         elements = []
@@ -1431,18 +1576,39 @@ Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${(
             spaceAfter=12,
             spaceBefore=12
         )
+        subheading_style = ParagraphStyle(
+            'CustomSubHeading',
+            parent=styles['Heading3'],
+            fontSize=14,
+            textColor=colors.HexColor('#4a4a4a'),
+            spaceAfter=8,
+            spaceBefore=8
+        )
+        body_style = ParagraphStyle(
+            'CustomBody',
+            parent=styles['Normal'],
+            fontSize=10,
+            spaceAfter=6
+        )
+        bullet_style = ParagraphStyle(
+            'CustomBullet',
+            parent=styles['Normal'],
+            fontSize=10,
+            leftIndent=20,
+            spaceAfter=4
+        )
 
         # Title
         elements.append(Paragraph(f"{brief['name']}<br/>Complete Analysis Report", title_style))
         elements.append(Spacer(1, 12))
-        elements.append(Paragraph(f"Generated: {datetime.now().strftime('%B %d, %Y at %I:%M %p')}", styles['Normal']))
+        elements.append(Paragraph(f"Generated: {datetime.now().strftime('%B %d, %Y at %I:%M %p')}", body_style))
         elements.append(Spacer(1, 24))
 
         # Executive Summary
         elements.append(Paragraph("Executive Summary", heading_style))
-        elements.append(Paragraph(f"<b>Brief Description:</b> {brief.get('description', 'N/A')}", styles['Normal']))
+        elements.append(Paragraph(f"<b>Brief Description:</b> {brief.get('description', 'N/A')}", body_style))
         elements.append(Spacer(1, 6))
-        elements.append(Paragraph(f"<b>Brand Context:</b> {brief.get('brand_context', 'N/A')}", styles['Normal']))
+        elements.append(Paragraph(f"<b>Brand Context:</b> {brief.get('brand_context', 'N/A')}", body_style))
         elements.append(Spacer(1, 12))
 
         # Key Metrics
@@ -1458,10 +1624,15 @@ Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${(
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
             ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 12),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-            ('GRID', (0, 0), (-1, -1), 1, colors.black)
+            ('FONTSIZE', (0, 0), (-1, 0), 11),
+            ('FONTSIZE', (0, 1), (-1, -1), 10),
+            ('TOPPADDING', (0, 0), (-1, -1), 8),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+            ('LEFTPADDING', (0, 0), (-1, -1), 12),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 12),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#f8f9fa')),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.HexColor('#f8f9fa'), colors.white]),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey)
         ]))
         elements.append(metrics_table)
         elements.append(Spacer(1, 20))
@@ -1471,8 +1642,7 @@ Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${(
         top_creators = reports_df.head(3)
         for idx, (_, row) in enumerate(top_creators.iterrows(), 1):
             score = row['overall_score'] or 0
-            score_indicator = "🟢" if score >= 4.0 else "🟡" if score >= 3.0 else "🔴"
-            elements.append(Paragraph(f"{idx}. <b>{row['creator_name']}</b> - {score:.1f}/5.0 ({row['primary_platform']})", styles['Normal']))
+            elements.append(Paragraph(f"{idx}. <b>{row['creator_name']}</b> - {score:.1f}/5.0 ({row['primary_platform']})", body_style))
             elements.append(Spacer(1, 6))
 
         elements.append(PageBreak())
@@ -1509,10 +1679,12 @@ Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${(
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
             ('FONTSIZE', (0, 0), (-1, 0), 10),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-            ('BACKGROUND', (0, 1), (-1, -1), colors.white),
-            ('GRID', (0, 0), (-1, -1), 1, colors.black),
-            ('FONTSIZE', (0, 1), (-1, -1), 9)
+            ('FONTSIZE', (0, 1), (-1, -1), 9),
+            ('TOPPADDING', (0, 0), (-1, -1), 8),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.HexColor('#f8f9fa'), colors.white]),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE')
         ]))
         elements.append(comparison_table)
 
@@ -1523,9 +1695,9 @@ Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${(
 
         for idx, (_, row) in enumerate(reports_df.iterrows(), 1):
             score = row['overall_score'] or 0
-            elements.append(Paragraph(f"<b>{idx}. {row['creator_name']}</b> - {score:.1f}/5.0", styles['Heading3']))
+            elements.append(Paragraph(f"<b>{idx}. {row['creator_name']}</b> - {score:.1f}/5.0", subheading_style))
             elements.append(Spacer(1, 6))
-            elements.append(Paragraph(f"<b>Summary:</b> {row.get('summary', 'No summary available')}", styles['Normal']))
+            elements.append(Paragraph(f"<b>Summary:</b> {row.get('summary', 'No summary available')}", body_style))
             elements.append(Spacer(1, 8))
 
             # Parse lists
@@ -1534,15 +1706,15 @@ Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${(
                 concerns = json.loads(row['concerns']) if isinstance(row['concerns'], str) else row['concerns']
 
                 if strengths:
-                    elements.append(Paragraph("<b>Key Strengths:</b>", styles['Normal']))
+                    elements.append(Paragraph("<b>Key Strengths:</b>", body_style))
                     for strength in strengths[:5]:  # Top 5 strengths
-                        elements.append(Paragraph(f"• {strength}", styles['Normal']))
+                        elements.append(Paragraph(f"• {strength}", bullet_style))
                     elements.append(Spacer(1, 6))
 
                 if concerns:
-                    elements.append(Paragraph("<b>Potential Concerns:</b>", styles['Normal']))
+                    elements.append(Paragraph("<b>Potential Concerns:</b>", body_style))
                     for concern in concerns[:3]:  # Top 3 concerns
-                        elements.append(Paragraph(f"• {concern}", styles['Normal']))
+                        elements.append(Paragraph(f"• {concern}", bullet_style))
                     elements.append(Spacer(1, 6))
             except:
                 pass
@@ -1552,12 +1724,13 @@ Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${(
             accounts_df = self.db.get_social_accounts(creator_id)
 
             if not accounts_df.empty:
-                elements.append(Paragraph("<b>Platform Analytics:</b>", styles['Normal']))
+                elements.append(Paragraph("<b>Platform Analytics:</b>", body_style))
                 elements.append(Spacer(1, 4))
 
                 for _, acc in accounts_df.iterrows():
                     platform = acc['platform'].title()
                     analytics = self.db.get_latest_analytics(int(acc['id']))
+                    profile_url = acc.get('profile_url', '')
 
                     if analytics:
                         followers_count = analytics.get('followers_count', 0) or 0
@@ -1565,7 +1738,11 @@ Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${(
                         followers = f"{followers_count:,}"
                         engagement = f"{engagement_rate:.2f}%"
 
-                        elements.append(Paragraph(f"<b>{platform}:</b> {followers} followers | {engagement} engagement", styles['Normal']))
+                        # Add platform info with clickable profile link
+                        platform_text = f"<b>{platform}:</b> {followers} followers | {engagement} engagement"
+                        if profile_url:
+                            platform_text += f' | <a href="{profile_url}" color="blue"><u>View Profile</u></a>'
+                        elements.append(Paragraph(platform_text, body_style))
 
                         # Get top 3 posts
                         posts_df = self.db.get_posts_for_account(int(acc['id']), limit=50)
@@ -1576,7 +1753,7 @@ Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${(
                             total_likes = int(posts_df['likes_count'].sum())
                             total_comments = int(posts_df['comments_count'].sum())
 
-                            elements.append(Paragraph(f"  Recent Posts: {len(posts_df)} analyzed | {total_likes:,} total likes | {total_comments:,} total comments", styles['Normal']))
+                            elements.append(Paragraph(f"  Recent Posts: {len(posts_df)} analyzed | {total_likes:,} total likes | {total_comments:,} total comments", body_style))
 
                             # Add top post preview
                             if not top_posts.empty:
@@ -1585,19 +1762,110 @@ Report ID: {report['id']} | Model: {report.get('model_used', 'N/A')} | Cost: ${(
                                 caption_preview = caption[:60] + "..." if len(caption) > 60 else caption
                                 likes = int(top_post.get('likes_count', 0))
                                 comments = int(top_post.get('comments_count', 0))
-                                elements.append(Paragraph(f"  Top Post: {likes:,} likes, {comments:,} comments - {caption_preview}", styles['Normal']))
+                                post_url = top_post.get('post_url', '')
+
+                                post_text = f"  Top Post: {likes:,} likes, {comments:,} comments - {caption_preview}"
+                                if post_url:
+                                    post_text += f' <a href="{post_url}" color="blue"><u>[View]</u></a>'
+                                elements.append(Paragraph(post_text, body_style))
 
                         elements.append(Spacer(1, 4))
 
                 elements.append(Spacer(1, 6))
 
-            # Add page break between creators
+            # Add separator between creators
             if idx < len(reports_df):
                 elements.append(Spacer(1, 12))
-                elements.append(Paragraph("─" * 80, styles['Normal']))
+                # Use a horizontal line instead of Unicode characters
+                elements.append(HRFlowable(width="100%", thickness=1, color=colors.grey, spaceAfter=12))
                 elements.append(Spacer(1, 12))
 
-        # Build PDF
-        doc.build(elements)
+        # Add debug/metadata section on separate page
+        elements.append(PageBreak())
+        elements.append(Paragraph("Debug & Metadata Information", heading_style))
+        elements.append(Paragraph("<i>This section contains technical details about the analysis. It can be removed if not needed.</i>", body_style))
+        elements.append(Spacer(1, 12))
+
+        # Get brand fit score weights from user settings (these may have been used during analysis)
+        # Note: These are current settings, actual analysis may have used different weights
+        try:
+            user_id = 1  # Default user, should ideally be passed as parameter
+            weight_brand_safety = float(self.db.get_setting(user_id, "weight_brand_safety", "0.3"))
+            weight_authenticity = float(self.db.get_setting(user_id, "weight_authenticity", "0.25"))
+            weight_natural_alignment = float(self.db.get_setting(user_id, "weight_natural_alignment", "0.25"))
+            weight_reach = float(self.db.get_setting(user_id, "weight_reach", "0.2"))
+        except:
+            # Fallback to defaults
+            weight_brand_safety = 0.3
+            weight_authenticity = 0.25
+            weight_natural_alignment = 0.25
+            weight_reach = 0.2
+
+        # Collect debug information
+        debug_data = [
+            ['Parameter', 'Value'],
+            ['Report Generation Date', datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
+            ['Brief ID', str(brief_id)],
+            ['Brief Name', brief['name']],
+            ['Total Creators Analyzed', str(len(reports_df))],
+            ['Average Score', f"{avg_score:.2f}"],
+            ['Total Cost', f"${total_cost:.4f}"],
+            ['', ''],  # Separator
+            ['Brand Fit Score Weights', ''],
+            ['  - Brand Safety Weight', f"{weight_brand_safety:.2f} ({weight_brand_safety*100:.0f}%)"],
+            ['  - Authenticity Weight', f"{weight_authenticity:.2f} ({weight_authenticity*100:.0f}%)"],
+            ['  - Natural Alignment Weight', f"{weight_natural_alignment:.2f} ({weight_natural_alignment*100:.0f}%)"],
+            ['  - Reach Weight', f"{weight_reach:.2f} ({weight_reach*100:.0f}%)"],
+            ['  - Total Weight Sum', f"{weight_brand_safety + weight_authenticity + weight_natural_alignment + weight_reach:.2f}"],
+        ]
+
+        # Add per-creator debug info
+        for idx, (_, row) in enumerate(reports_df.iterrows(), 1):
+            debug_data.append([f'Creator {idx} - ID', str(row['creator_id'])])
+            debug_data.append([f'Creator {idx} - Name', row['creator_name']])
+            debug_data.append([f'Creator {idx} - Model Used', row.get('model_used', 'N/A')])
+            debug_data.append([f'Creator {idx} - Analysis Cost', f"${(row.get('analysis_cost', 0.0) or 0.0):.4f}"])
+            debug_data.append([f'Creator {idx} - Generated At', str(row.get('generated_at', 'N/A'))])
+            debug_data.append([f'Creator {idx} - Report ID', str(row.get('id', 'N/A'))])
+
+        debug_table = Table(debug_data, colWidths=[3*inch, 3.5*inch])
+        debug_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#666666')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 10),
+            ('FONTSIZE', (0, 1), (-1, -1), 8),
+            ('TOPPADDING', (0, 0), (-1, -1), 6),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+            ('LEFTPADDING', (0, 0), (-1, -1), 10),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 10),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.HexColor('#f0f0f0'), colors.white]),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP')
+        ]))
+        elements.append(debug_table)
+        elements.append(Spacer(1, 12))
+
+        # Add system info
+        elements.append(Paragraph("<b>System Information:</b>", body_style))
+        elements.append(Paragraph(f"Python Package: reportlab", body_style))
+        elements.append(Paragraph(f"Export Format: PDF", body_style))
+        elements.append(Paragraph(f"Page Size: Letter (8.5 x 11 inches)", body_style))
+
+        # Add page footer function
+        def add_page_number(canvas, doc):
+            """Add page number and footer to each page"""
+            page_num = canvas.getPageNumber()
+            text = f"Page {page_num}"
+            canvas.saveState()
+            canvas.setFont('Helvetica', 9)
+            canvas.setFillColor(colors.grey)
+            canvas.drawRightString(letter[0] - 72, 30, text)
+            canvas.drawString(72, 30, "BrandSafe Creator Analysis Platform")
+            canvas.restoreState()
+
+        # Build PDF with page numbers
+        doc.build(elements, onFirstPage=add_page_number, onLaterPages=add_page_number)
         buffer.seek(0)
         return buffer.getvalue()

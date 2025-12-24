@@ -2,6 +2,7 @@ import streamlit as st
 import json
 import pandas as pd
 import time
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -346,14 +347,15 @@ with st.sidebar.expander("⌨️ Shortcuts & Tips"):
 # Show welcome message for first-time users
 check_first_time_user()
 
-tab_home, tab_setup, tab_briefs, tab_creators, tab_analysis, tab_reports, tab_compare = st.tabs([
+tab_home, tab_setup, tab_briefs, tab_creators, tab_analysis, tab_reports, tab_compare, tab_assets = st.tabs([
     "🏠 Home",
     "⚙️ System Setup",
     "📄 Briefs",
     "👥 Creators",
     "🔍 Analysis",
     "📊 Reports",
-    "⚖️ Compare"
+    "⚖️ Compare",
+    "🎨 Campaign Assets"
 ])
 
 # --- TAB: HOME/OVERVIEW ---
@@ -840,6 +842,146 @@ with tab_setup:
 
         else:
             st.caption("Demographics debug is off")
+
+        st.markdown("---")
+
+        # Custom Factor Weights
+        st.markdown("### 🎚️ Brand Fit Score Weights")
+        st.caption("Customize how different factors contribute to the overall brand fit score")
+
+        # Get current weights or use defaults
+        default_weights = {
+            'brand_safety': 0.3,
+            'authenticity': 0.25,
+            'natural_alignment': 0.25,
+            'reach': 0.2
+        }
+
+        current_weights = {
+            'brand_safety': float(db.get_setting(user_id, "weight_brand_safety", str(default_weights['brand_safety']))),
+            'authenticity': float(db.get_setting(user_id, "weight_authenticity", str(default_weights['authenticity']))),
+            'natural_alignment': float(db.get_setting(user_id, "weight_natural_alignment", str(default_weights['natural_alignment']))),
+            'reach': float(db.get_setting(user_id, "weight_reach", str(default_weights['reach'])))
+        }
+
+        # Display current total
+        current_total = sum(current_weights.values())
+        if abs(current_total - 1.0) > 0.01:
+            st.warning(f"⚠️ Current weights sum to {current_total:.2f}, not 1.0. Please adjust.")
+
+        # Create sliders for each weight
+        new_weights = {}
+        cols = st.columns(2)
+
+        with cols[0]:
+            new_weights['brand_safety'] = st.slider(
+                "Brand Safety",
+                min_value=0.0,
+                max_value=1.0,
+                value=current_weights['brand_safety'],
+                step=0.05,
+                help="Weight for brand safety score (content appropriateness)",
+                key="weight_slider_safety"
+            )
+
+            new_weights['natural_alignment'] = st.slider(
+                "Natural Alignment",
+                min_value=0.0,
+                max_value=1.0,
+                value=current_weights['natural_alignment'],
+                step=0.05,
+                help="Weight for natural alignment (organic brand/category mentions)",
+                key="weight_slider_alignment"
+            )
+
+        with cols[1]:
+            new_weights['authenticity'] = st.slider(
+                "Authenticity",
+                min_value=0.0,
+                max_value=1.0,
+                value=current_weights['authenticity'],
+                step=0.05,
+                help="Weight for authenticity score (genuine engagement)",
+                key="weight_slider_authenticity"
+            )
+
+            new_weights['reach'] = st.slider(
+                "Reach",
+                min_value=0.0,
+                max_value=1.0,
+                value=current_weights['reach'],
+                step=0.05,
+                help="Weight for reach (follower count, scaled)",
+                key="weight_slider_reach"
+            )
+
+        # Calculate new total
+        new_total = sum(new_weights.values())
+        total_color = "green" if abs(new_total - 1.0) < 0.01 else "orange"
+        st.markdown(f"**Total Weight:** :{total_color}[{new_total:.2f}] {'✅' if abs(new_total - 1.0) < 0.01 else '⚠️ Must equal 1.00'}")
+
+        # Show formula preview
+        st.caption(f"""
+**Formula:** Brand Fit = (Safety × {new_weights['brand_safety']:.2f}) +
+(Authenticity × {new_weights['authenticity']:.2f}) +
+(Alignment × {new_weights['natural_alignment']:.2f}) +
+(Reach × {new_weights['reach']:.2f})
+""")
+
+        # Save button
+        col1, col2, col3 = st.columns([1, 1, 2])
+        with col1:
+            if st.button("💾 Save Weights", disabled=abs(new_total - 1.0) >= 0.01, key="save_weights_btn"):
+                # Save all weights
+                db.save_setting(user_id, "weight_brand_safety", str(new_weights['brand_safety']))
+                db.save_setting(user_id, "weight_authenticity", str(new_weights['authenticity']))
+                db.save_setting(user_id, "weight_natural_alignment", str(new_weights['natural_alignment']))
+                db.save_setting(user_id, "weight_reach", str(new_weights['reach']))
+                st.success("✅ Custom weights saved!")
+                st.rerun()
+
+        with col2:
+            if st.button("🔄 Reset to Default", key="reset_weights_btn"):
+                # Reset to defaults
+                for factor, default in default_weights.items():
+                    db.save_setting(user_id, f"weight_{factor}", str(default))
+                st.success("✅ Reset to default weights")
+                st.rerun()
+
+        # Show if using custom weights
+        weights_are_custom = any(
+            abs(current_weights[k] - default_weights[k]) > 0.01
+            for k in default_weights
+        )
+        if weights_are_custom:
+            st.info("ℹ️ Using custom weights. All new analyses will use these weights.")
+        else:
+            st.caption("Using default weights (30% safety, 25% authenticity, 25% alignment, 20% reach)")
+
+        st.markdown("---")
+
+        # Alignment Score Debug Mode
+        alignment_debug = db.get_setting(user_id, "alignment_debug", "false") == "true"
+
+        new_alignment_debug = st.checkbox(
+            "Enable Natural Alignment Debug Logging",
+            value=alignment_debug,
+            help="Shows detailed logs for how natural alignment scores are calculated by Gemini AI",
+            key="alignment_debug_checkbox"
+        )
+
+        if new_alignment_debug != alignment_debug:
+            db.save_setting(user_id, "alignment_debug", "true" if new_alignment_debug else "false")
+            if new_alignment_debug:
+                st.success("✅ Alignment debug enabled - check terminal for detailed logs")
+            else:
+                st.success("✅ Alignment debug disabled")
+            st.rerun()
+
+        if alignment_debug:
+            st.info("🔍 Alignment debug is ON - tracking natural alignment scoring in terminal")
+        else:
+            st.caption("Alignment debug is off")
 
     with st.expander("YouTube Configuration (Optional)", expanded=False):
         st.markdown("Add YouTube Data API v3 keys to enable creator analysis on YouTube.")
@@ -2367,17 +2509,17 @@ with tab_compare:
                                 )
 
                             with col_roi2:
-                                expected_cpa = st.number_input(
+                                revenue_per_conversion = st.number_input(
                                     "Expected Revenue per Conversion ($)",
                                     min_value=0.0,
                                     value=100.0,
                                     step=10.0,
-                                    key="roi_cpa"
+                                    key="roi_revenue_per_conversion"
                                 )
 
                             if st.button("Calculate ROI", key="calc_roi"):
                                 roi_data = comp_engine.estimate_campaign_roi(
-                                    creator_ids, campaign_budget, expected_cpa, brief_id
+                                    creator_ids, campaign_budget, revenue_per_conversion, brief_id
                                 )
 
                                 if 'error' not in roi_data:
@@ -2404,10 +2546,382 @@ with tab_compare:
                                     st.info(f"""
                                     **Assumptions:**
                                     - Each creator posts 3 times
-                                    - 1% of engaged users convert
+                                    - {roi_data['organic_reach_rate']:.0f}% organic reach per post
+                                    - {roi_data['conversion_rate']:.1f}% of engaged users convert
                                     - Cost per impression: ${roi_data['cost_per_impression']:.4f}
                                     - Cost per engagement: ${roi_data['cost_per_engagement']:.2f}
                                     """)
                                 else:
                                     st.error(roi_data['error'])
+
+
+# --- TAB: CAMPAIGN ASSETS ---
+with tab_assets:
+    st.header("Campaign Assets")
+    st.caption("Generate AI-powered campaign images and videos")
+
+    # Import asset generator
+    from asset_generator import AssetGenerator
+
+    # Get API key from session state (same as other tabs)
+    gemini_api_key = st.session_state.api_key
+
+    if not gemini_api_key:
+        st.warning("Please configure your Gemini API key in System Setup first.")
+    else:
+        # Initialize asset generator
+        try:
+            asset_gen = AssetGenerator(gemini_api_key, db)
+        except Exception as e:
+            st.error(f"Failed to initialize asset generator: {str(e)}")
+            st.stop()
+
+        # Select Brief
+        briefs_df = db.get_briefs(user_id)
+
+        if briefs_df.empty:
+            st.info("Create a brief first to generate campaign assets.")
+        else:
+            selected_brief_name = st.selectbox(
+                "Select Brief",
+                briefs_df['name'].tolist(),
+                key="assets_brief_select"
+            )
+
+            if selected_brief_name:
+                brief_row = briefs_df[briefs_df['name'] == selected_brief_name].iloc[0]
+                brief_id = int(brief_row['id'])
+                brief = db.get_brief(brief_id)
+
+                # Get creators for this brief
+                creators_df = db.get_creators_for_brief(brief_id)
+
+                if creators_df.empty:
+                    st.info("No creators in this brief. Add creators first.")
+                else:
+                    # Select SINGLE Creator (dropdown, not multiselect)
+                    selected_creator_name = st.selectbox(
+                        "Select Creator",
+                        [""] + creators_df['name'].tolist(),
+                        key="assets_creator_select"
+                    )
+
+                    if selected_creator_name:
+                        creator_row = creators_df[creators_df['name'] == selected_creator_name].iloc[0]
+                        creator_id = int(creator_row['id'])
+                        creator = db.get_creator(creator_id)
+
+                        # Show creator context
+                        st.markdown("---")
+                        st.markdown("### 👤 Creator Context")
+
+                        col_ctx1, col_ctx2, col_ctx3 = st.columns(3)
+
+                        with col_ctx1:
+                            st.metric("Primary Platform", creator['primary_platform'].title())
+
+                        # Get social accounts
+                        social_accounts_df = db.get_social_accounts(creator_id)
+                        total_followers = 0
+                        for _, acc in social_accounts_df.iterrows():
+                            analytics = db.get_latest_analytics(acc['id'])
+                            if analytics:
+                                total_followers += analytics.get('followers_count', 0) or 0
+
+                        with col_ctx2:
+                            st.metric("Total Reach", f"{total_followers:,}")
+
+                        # Get report if exists
+                        report = db.get_creator_report(brief_id, creator_id)
+                        if report:
+                            with col_ctx3:
+                                st.metric("Overall Score", f"{report['overall_score']:.1f}/5")
+
+                            # Show brief summary
+                            with st.expander("Analysis Summary", expanded=False):
+                                st.markdown(report.get('summary', 'No summary available'))
+
+                        st.markdown("---")
+
+                        # Asset Generation Section
+                        st.markdown("### 🎨 Generate Assets")
+
+                        # Tabs for Image and Video
+                        asset_tab_image, asset_tab_video = st.tabs(["📸 Campaign Image", "🎬 Campaign Video"])
+
+                        # --- IMAGE GENERATION TAB ---
+                        with asset_tab_image:
+                            st.markdown("Generate a visual representation of the campaign concept featuring this creator with your brand.")
+
+                            # Configuration
+                            col_img1, col_img2 = st.columns(2)
+
+                            with col_img1:
+                                aspect_ratio = st.selectbox(
+                                    "Aspect Ratio",
+                                    ["16:9 (Landscape)", "1:1 (Square)", "9:16 (Portrait)", "4:3 (Standard)"],
+                                    index=1,
+                                    key="image_aspect_ratio"
+                                )
+                                aspect_ratio_value = aspect_ratio.split()[0]
+
+                            with col_img2:
+                                use_custom_prompt = st.checkbox("Customize prompt", key="use_custom_image_prompt")
+
+                            # Show default prompt preview or custom input
+                            custom_image_prompt = None
+                            if not use_custom_prompt:
+                                with st.expander("View Default Prompt", expanded=False):
+                                    default_prompt = asset_gen.build_campaign_image_prompt(
+                                        brief, creator, social_accounts_df.to_dict('records'), report
+                                    )
+                                    st.text_area("Default prompt:", default_prompt, height=150, disabled=True, key="default_img_prompt_display")
+                            else:
+                                custom_image_prompt = st.text_area(
+                                    "Custom Image Prompt",
+                                    height=150,
+                                    key="custom_image_prompt",
+                                    placeholder="Describe the campaign image you want to generate..."
+                                )
+
+                            # Cost estimate
+                            from config import estimate_image_generation_cost
+                            image_cost = estimate_image_generation_cost(1)
+                            st.info(f"💰 Estimated cost: ${image_cost['total_cost']:.3f} per image")
+
+                            # Generate button
+                            if st.button("🎨 Generate Campaign Image", key="generate_image_btn", type="primary"):
+                                prompt_to_use = custom_image_prompt if use_custom_prompt else None
+
+                                progress_bar = st.progress(0)
+                                status_text = st.empty()
+
+                                def progress_callback(message, progress):
+                                    status_text.text(message)
+                                    progress_bar.progress(progress)
+
+                                try:
+                                    result = asset_gen.generate_campaign_image(
+                                        user_id=user_id,
+                                        brief_id=brief_id,
+                                        creator_id=creator_id,
+                                        custom_prompt=prompt_to_use,
+                                        aspect_ratio=aspect_ratio_value,
+                                        progress_callback=progress_callback
+                                    )
+
+                                    progress_bar.progress(1.0)
+                                    status_text.text("✓ Generation complete!")
+
+                                    st.success(f"Image generated successfully! Cost: ${result['cost']:.3f}")
+                                    st.rerun()
+
+                                except Exception as e:
+                                    st.error(f"Generation failed: {str(e)}")
+
+                            # Display generated images
+                            st.markdown("---")
+                            st.markdown("#### 📸 Generated Images")
+
+                            assets_df = db.get_campaign_assets(
+                                user_id=user_id,
+                                brief_id=brief_id,
+                                creator_id=creator_id,
+                                asset_type='image'
+                            )
+
+                            if not assets_df.empty:
+                                # Display in grid
+                                cols_per_row = 2
+                                for i in range(0, len(assets_df), cols_per_row):
+                                    cols = st.columns(cols_per_row)
+                                    for j, col in enumerate(cols):
+                                        idx = i + j
+                                        if idx < len(assets_df):
+                                            asset = assets_df.iloc[idx]
+                                            with col:
+                                                if os.path.exists(asset['file_path']):
+                                                    st.image(asset['file_path'], use_container_width=True)
+                                                    st.caption(f"Generated: {asset['created_at']}")
+                                                    st.caption(f"Cost: ${asset['cost']:.3f}")
+
+                                                    col_btn1, col_btn2 = st.columns(2)
+                                                    with col_btn1:
+                                                        with open(asset['file_path'], 'rb') as f:
+                                                            st.download_button(
+                                                                "📥 Download",
+                                                                f.read(),
+                                                                file_name=f"campaign_image_{asset['id']}.png",
+                                                                key=f"download_img_{asset['id']}"
+                                                            )
+                                                    with col_btn2:
+                                                        if st.button("🗑️ Delete", key=f"delete_img_{asset['id']}"):
+                                                            if db.delete_campaign_asset(user_id, asset['id']):
+                                                                if os.path.exists(asset['file_path']):
+                                                                    os.remove(asset['file_path'])
+                                                                st.rerun()
+                                                else:
+                                                    st.warning(f"File not found: {asset['file_path']}")
+                            else:
+                                st.info("No images generated yet. Click 'Generate Campaign Image' to create one.")
+
+                        # --- VIDEO GENERATION TAB ---
+                        with asset_tab_video:
+                            st.markdown("Generate campaign videos featuring creator stats, highlights, and concepts.")
+
+                            # Video type selection
+                            video_type = st.radio(
+                                "Video Type",
+                                ["Campaign Concept Visualization", "Creator Stats & Highlights"],
+                                key="video_type_select"
+                            )
+                            video_type_value = "concept" if video_type.startswith("Campaign") else "stats"
+
+                            # Configuration
+                            col_vid1, col_vid2 = st.columns(2)
+
+                            with col_vid1:
+                                duration = st.slider(
+                                    "Duration (seconds)",
+                                    min_value=4,
+                                    max_value=8,
+                                    value=8,
+                                    key="video_duration"
+                                )
+
+                            with col_vid2:
+                                resolution = st.selectbox(
+                                    "Resolution",
+                                    ["720p", "1080p"],
+                                    key="video_resolution"
+                                )
+
+                            use_custom_vid_prompt = st.checkbox("Customize prompt", key="use_custom_video_prompt")
+
+                            # Show default prompt preview or custom input
+                            custom_video_prompt = None
+                            if not use_custom_vid_prompt:
+                                with st.expander("View Default Prompt", expanded=False):
+                                    # Build appropriate analytics dict
+                                    analytics_data = {}
+                                    for _, acc in social_accounts_df.iterrows():
+                                        analytics = db.get_latest_analytics(acc['id'])
+                                        if analytics:
+                                            analytics_data[acc['platform']] = analytics
+
+                                    default_vid_prompt = asset_gen.build_campaign_video_prompt(
+                                        video_type_value,
+                                        brief,
+                                        creator,
+                                        social_accounts_df.to_dict('records'),
+                                        analytics_data,
+                                        report
+                                    )
+                                    st.text_area("Default prompt:", default_vid_prompt, height=150, disabled=True, key="default_vid_prompt_display")
+                            else:
+                                custom_video_prompt = st.text_area(
+                                    "Custom Video Prompt",
+                                    height=150,
+                                    key="custom_video_prompt",
+                                    placeholder="Describe the campaign video you want to generate..."
+                                )
+
+                            # Cost estimate
+                            from config import estimate_video_generation_cost
+                            video_cost = estimate_video_generation_cost(duration)
+                            st.info(f"💰 Estimated cost: ${video_cost['total_cost']:.2f} for {duration}s video")
+
+                            # Generate button
+                            generate_video_clicked = st.button("🎬 Generate Campaign Video", key="generate_video_btn", type="primary")
+
+                            # Initialize session state
+                            if 'video_generating' not in st.session_state:
+                                st.session_state.video_generating = False
+
+                            # Start generation on button click
+                            if generate_video_clicked and not st.session_state.video_generating:
+                                st.session_state.video_generating = True
+                                st.rerun()
+
+                            # Execute generation if flag is set
+                            if st.session_state.video_generating:
+                                prompt_to_use = custom_video_prompt if use_custom_vid_prompt else None
+
+                                progress_bar = st.progress(0)
+                                status_text = st.empty()
+
+                                def video_progress_callback(message, progress):
+                                    status_text.text(message)
+                                    progress_bar.progress(progress)
+
+                                try:
+                                    st.warning("⏳ Video generation can take 2-5 minutes. Please wait...")
+
+                                    result = asset_gen.generate_campaign_video(
+                                        user_id=user_id,
+                                        brief_id=brief_id,
+                                        creator_id=creator_id,
+                                        video_type=video_type_value,
+                                        custom_prompt=prompt_to_use,
+                                        duration_seconds=duration,
+                                        resolution=resolution,
+                                        progress_callback=video_progress_callback
+                                    )
+
+                                    progress_bar.progress(1.0)
+                                    status_text.text("✓ Video generation complete!")
+
+                                    st.success(f"Video generated successfully! Cost: ${result['cost']:.2f}")
+                                    st.session_state.video_generating = False
+                                    st.rerun()
+
+                                except Exception as e:
+                                    st.session_state.video_generating = False
+                                    st.error(f"Video generation failed: {str(e)}")
+
+                            # Display generated videos
+                            st.markdown("---")
+                            st.markdown("#### 🎬 Generated Videos")
+
+                            video_assets_df = db.get_campaign_assets(
+                                user_id=user_id,
+                                brief_id=brief_id,
+                                creator_id=creator_id,
+                                asset_type='video'
+                            )
+
+                            if not video_assets_df.empty:
+                                for idx, asset in video_assets_df.iterrows():
+                                    if os.path.exists(asset['file_path']):
+                                        col_v1, col_v2 = st.columns([2, 1])
+
+                                        with col_v1:
+                                            st.video(asset['file_path'])
+
+                                        with col_v2:
+                                            st.caption(f"**Type:** {asset['asset_subtype'].title()}")
+                                            st.caption(f"**Generated:** {asset['created_at']}")
+                                            st.caption(f"**Cost:** ${asset['cost']:.2f}")
+
+                                            with open(asset['file_path'], 'rb') as f:
+                                                st.download_button(
+                                                    "📥 Download Video",
+                                                    f.read(),
+                                                    file_name=f"campaign_video_{asset['id']}.mp4",
+                                                    key=f"download_vid_{asset['id']}"
+                                                )
+
+                                            if st.button("🗑️ Delete", key=f"delete_vid_{asset['id']}"):
+                                                if db.delete_campaign_asset(user_id, asset['id']):
+                                                    if os.path.exists(asset['file_path']):
+                                                        os.remove(asset['file_path'])
+                                                    if asset['thumbnail_path'] and os.path.exists(asset['thumbnail_path']):
+                                                        os.remove(asset['thumbnail_path'])
+                                                    st.rerun()
+
+                                        st.markdown("---")
+                                    else:
+                                        st.warning(f"File not found: {asset['file_path']}")
+                            else:
+                                st.info("No videos generated yet. Click 'Generate Campaign Video' to create one.")
 

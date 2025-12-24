@@ -311,6 +311,31 @@ class DatabaseManager:
             )
         """)
 
+        # Campaign Assets table (for generated images and videos)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS campaign_assets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                brief_id INTEGER NOT NULL,
+                creator_id INTEGER NOT NULL,
+                asset_type TEXT NOT NULL,
+                asset_subtype TEXT,
+                file_path TEXT NOT NULL,
+                thumbnail_path TEXT,
+                prompt_used TEXT NOT NULL,
+                model_used TEXT NOT NULL,
+                generation_params TEXT,
+                cost REAL DEFAULT 0.0,
+                status TEXT DEFAULT 'completed',
+                error_message TEXT,
+                metadata TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (brief_id) REFERENCES briefs(id) ON DELETE CASCADE,
+                FOREIGN KEY (creator_id) REFERENCES creators(id) ON DELETE CASCADE
+            )
+        """)
+
         # Migration: Add new columns to existing databases
         self._migrate_analysis_results_table(cursor)
         self._migrate_to_multiuser(cursor)
@@ -2119,6 +2144,214 @@ class DatabaseManager:
         except Exception as e:
             print(f"  [DB ERROR] Failed to retrieve demographics: {type(e).__name__}: {e}")
             return None
+
+    # ========== Campaign Assets Methods ==========
+
+    def save_campaign_asset(
+        self,
+        user_id: int,
+        brief_id: int,
+        creator_id: int,
+        asset_type: str,
+        asset_subtype: str,
+        file_path: str,
+        thumbnail_path: str,
+        prompt_used: str,
+        model_used: str,
+        generation_params: dict,
+        cost: float,
+        status: str = 'completed',
+        error_message: str = None,
+        metadata: dict = None
+    ) -> int:
+        """
+        Save a generated campaign asset to database
+
+        Args:
+            user_id: User ID
+            brief_id: Brief ID
+            creator_id: Creator ID
+            asset_type: 'image' or 'video'
+            asset_subtype: 'concept' or 'stats'
+            file_path: Path to saved asset file
+            thumbnail_path: Path to thumbnail (for videos)
+            prompt_used: The prompt used for generation
+            model_used: Model name used for generation
+            generation_params: JSON dict of generation parameters
+            cost: Cost of generation
+            status: Status ('pending', 'generating', 'completed', 'failed')
+            error_message: Error message if failed
+            metadata: JSON dict of metadata
+
+        Returns:
+            Asset ID
+        """
+        import json
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            INSERT INTO campaign_assets (
+                user_id, brief_id, creator_id, asset_type, asset_subtype,
+                file_path, thumbnail_path, prompt_used, model_used,
+                generation_params, cost, status, error_message, metadata
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            user_id, brief_id, creator_id, asset_type, asset_subtype,
+            file_path, thumbnail_path, prompt_used, model_used,
+            json.dumps(generation_params) if generation_params else None,
+            cost, status, error_message,
+            json.dumps(metadata) if metadata else None
+        ))
+
+        asset_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+
+        return asset_id
+
+    def get_campaign_assets(
+        self,
+        user_id: int,
+        brief_id: int = None,
+        creator_id: int = None,
+        asset_type: str = None
+    ) -> pd.DataFrame:
+        """
+        Get campaign assets with optional filters
+
+        Args:
+            user_id: User ID
+            brief_id: Optional brief ID filter
+            creator_id: Optional creator ID filter
+            asset_type: Optional asset type filter ('image' or 'video')
+
+        Returns:
+            DataFrame of assets
+        """
+        conn = sqlite3.connect(self.db_path)
+
+        query = "SELECT * FROM campaign_assets WHERE user_id = ?"
+        params = [user_id]
+
+        if brief_id is not None:
+            query += " AND brief_id = ?"
+            params.append(brief_id)
+
+        if creator_id is not None:
+            query += " AND creator_id = ?"
+            params.append(creator_id)
+
+        if asset_type is not None:
+            query += " AND asset_type = ?"
+            params.append(asset_type)
+
+        query += " ORDER BY created_at DESC"
+
+        df = pd.read_sql_query(query, conn, params=params)
+        conn.close()
+
+        return df
+
+    def get_campaign_asset(self, asset_id: int) -> Optional[dict]:
+        """
+        Get a single campaign asset by ID
+
+        Args:
+            asset_id: Asset ID
+
+        Returns:
+            Asset dict or None
+        """
+        import json
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT * FROM campaign_assets WHERE id = ?", (asset_id,))
+        row = cursor.fetchone()
+        conn.close()
+
+        if row:
+            columns = [
+                'id', 'user_id', 'brief_id', 'creator_id', 'asset_type',
+                'asset_subtype', 'file_path', 'thumbnail_path', 'prompt_used',
+                'model_used', 'generation_params', 'cost', 'status',
+                'error_message', 'metadata', 'created_at'
+            ]
+            asset = dict(zip(columns, row))
+
+            # Parse JSON fields
+            if asset['generation_params']:
+                try:
+                    asset['generation_params'] = json.loads(asset['generation_params'])
+                except:
+                    pass
+
+            if asset['metadata']:
+                try:
+                    asset['metadata'] = json.loads(asset['metadata'])
+                except:
+                    pass
+
+            return asset
+
+        return None
+
+    def delete_campaign_asset(self, user_id: int, asset_id: int) -> bool:
+        """
+        Delete a campaign asset
+
+        Args:
+            user_id: User ID (for security)
+            asset_id: Asset ID
+
+        Returns:
+            True if deleted
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "DELETE FROM campaign_assets WHERE id = ? AND user_id = ?",
+            (asset_id, user_id)
+        )
+
+        deleted = cursor.rowcount > 0
+        conn.commit()
+        conn.close()
+
+        return deleted
+
+    def update_asset_status(
+        self,
+        asset_id: int,
+        status: str,
+        error_message: str = None
+    ) -> bool:
+        """
+        Update asset generation status
+
+        Args:
+            asset_id: Asset ID
+            status: New status
+            error_message: Optional error message
+
+        Returns:
+            True if updated
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "UPDATE campaign_assets SET status = ?, error_message = ? WHERE id = ?",
+            (status, error_message, asset_id)
+        )
+
+        updated = cursor.rowcount > 0
+        conn.commit()
+        conn.close()
+
+        return updated
 
 
 # Singleton instance

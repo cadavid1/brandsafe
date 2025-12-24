@@ -373,18 +373,24 @@ class ComparisonEngine:
         return risk
 
     def estimate_campaign_roi(self, creator_ids: List[int], campaign_budget: float,
-                             expected_cpa: float, brief_id: int) -> Dict:
+                             revenue_per_conversion: float, brief_id: int) -> Dict:
         """
-        Estimate campaign ROI
+        Estimate campaign ROI using realistic social media metrics
 
         Args:
             creator_ids: List of creator IDs
             campaign_budget: Total campaign budget
-            expected_cpa: Expected cost per acquisition
+            revenue_per_conversion: Expected revenue per conversion
             brief_id: Brief ID
 
         Returns:
             Dict with ROI estimates
+
+        Assumptions:
+            - 3 posts per creator
+            - 10% organic reach per post (typical for social media)
+            - Engagement rate applied to reached users
+            - 0.1% conversion rate from engaged users (realistic for e-commerce)
         """
         comparison = self.compare_creators(creator_ids, brief_id)
 
@@ -393,25 +399,33 @@ class ComparisonEngine:
 
         summary = comparison['metrics_summary']
 
-        # Estimate reach and engagement
-        total_reach = summary.get('total_reach', 0)
-        avg_engagement = summary.get('avg_engagement_rate', 0)
+        # Get metrics
+        total_followers = summary.get('total_reach', 0)
+        avg_engagement_rate = summary.get('avg_engagement_rate', 0)
+        num_creators = summary.get('total_creators', 1)
 
-        # Estimate impressions (reach * avg posts per creator)
-        estimated_impressions = total_reach * 3  # Assume 3 posts per creator
+        # Realistic social media metrics
+        posts_per_creator = 3
+        organic_reach_rate = 0.10  # 10% of followers see each post
+        conversion_rate = 0.001  # 0.1% of engagements convert
 
-        # Estimate engagement
-        estimated_engagement = estimated_impressions * (avg_engagement / 100)
+        # Calculate estimated metrics
+        # Impressions = followers × reach rate × posts per creator
+        estimated_impressions = total_followers * organic_reach_rate * posts_per_creator
 
-        # Estimate conversions (assume 1% of engaged users convert)
-        estimated_conversions = estimated_engagement * 0.01
+        # Engagement = impressions × engagement rate
+        # Note: avg_engagement_rate is already a percentage
+        estimated_engagement = estimated_impressions * (avg_engagement_rate / 100)
 
-        # Calculate ROI
-        estimated_revenue = estimated_conversions * expected_cpa
+        # Conversions = engagements × conversion rate
+        estimated_conversions = estimated_engagement * conversion_rate
+
+        # Revenue and ROI
+        estimated_revenue = estimated_conversions * revenue_per_conversion
         roi_percentage = ((estimated_revenue - campaign_budget) / campaign_budget) * 100 if campaign_budget > 0 else 0
 
         roi_data = {
-            'total_reach': total_reach,
+            'total_reach': total_followers,
             'estimated_impressions': int(estimated_impressions),
             'estimated_engagement': int(estimated_engagement),
             'estimated_conversions': int(estimated_conversions),
@@ -420,6 +434,8 @@ class ComparisonEngine:
             'roi_percentage': roi_percentage,
             'cost_per_impression': campaign_budget / estimated_impressions if estimated_impressions > 0 else 0,
             'cost_per_engagement': campaign_budget / estimated_engagement if estimated_engagement > 0 else 0,
+            'organic_reach_rate': organic_reach_rate * 100,
+            'conversion_rate': conversion_rate * 100,
         }
 
         return roi_data
