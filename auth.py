@@ -184,8 +184,9 @@ class AuthManager:
         # Note: Page config is set in app.py before auth check
 
         # Header
-        st.title("🧪 UXR CUJ Analysis")
-        st.markdown("**AI-Powered User Journey Analysis**")
+        st.title("🛡️ BrandSafe")
+        st.markdown("**AI-Powered Creator Analysis & Brand Safety**")
+        st.markdown("***Created by David Pearl***")
         st.markdown("---")
 
         # Demo mode button (prominent placement)

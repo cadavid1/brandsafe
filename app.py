@@ -1289,8 +1289,6 @@ with tab_briefs:
             if st.form_submit_button("Create Brief", type="primary"):
                 if not brief_name or not brand_context:
                     st.error("Please fill in Brief Name and Brand Context (required fields)")
-                elif auth.is_demo_mode() and len(briefs_df) >= 1:
-                    st.error("Demo mode limit: Maximum 1 brief. Create an account for unlimited access!")
                 else:
                     # Save brief
                     brief_id = db.save_brief(
@@ -1454,8 +1452,6 @@ with tab_creators:
                     st.error("Please enter a Creator Name")
                 elif len(platform_urls) == 0:
                     st.error("Please add at least one social media URL")
-                elif auth.is_demo_mode() and len(creators_df) >= 3:
-                    st.error("Demo mode limit: Maximum 3 creators. Create an account for unlimited access!")
                 else:
                     # Determine primary platform (first one added)
                     primary_platform = list(platform_urls.keys())[0]
@@ -2741,7 +2737,7 @@ with tab_assets:
                                             asset = assets_df.iloc[idx]
                                             with col:
                                                 if os.path.exists(asset['file_path']):
-                                                    st.image(asset['file_path'], use_container_width=True)
+                                                    st.image(asset['file_path'], width='stretch')
                                                     st.caption(f"Generated: {asset['created_at']}")
                                                     st.caption(f"Cost: ${asset['cost']:.3f}")
 
