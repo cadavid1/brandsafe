@@ -34,8 +34,7 @@ class DatabaseManager:
 
     def _init_database(self):
         """Initialize database schema"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = self.db_adapter.cursor()
 
         # Users table
         cursor.execute("""
@@ -345,7 +344,7 @@ class DatabaseManager:
         self._fix_brief_creators_data_types(cursor)
         self._migrate_natural_alignment_columns(cursor)
 
-        conn.commit()
+        self.db_adapter.commit()
         # Don't close connection - it's managed by the adapter
 
     def _migrate_analysis_results_table(self, cursor):
@@ -510,7 +509,7 @@ class DatabaseManager:
         """Create a new user and return user ID"""
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
 
             cursor.execute("""
                 INSERT INTO users (email, username, password_hash, full_name)
@@ -518,7 +517,7 @@ class DatabaseManager:
             """, (email, username, password_hash, full_name))
 
             user_id = cursor.lastrowid
-            conn.commit()
+            self.db_adapter.commit()
             return user_id
         except Exception as e:
             # Handle integrity errors (duplicate username/email)
@@ -532,7 +531,7 @@ class DatabaseManager:
         """Get user by username"""
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
 
             cursor.execute("""
                 SELECT id, email, username, password_hash, full_name, created_at, last_login
@@ -562,7 +561,7 @@ class DatabaseManager:
         """Get user by email"""
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
 
             cursor.execute("""
                 SELECT id, email, username, password_hash, full_name, created_at, last_login
@@ -592,7 +591,7 @@ class DatabaseManager:
         """Update user's last login timestamp"""
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
 
             cursor.execute("""
                 UPDATE users
@@ -600,7 +599,7 @@ class DatabaseManager:
                 WHERE id = ?
             """, (user_id,))
 
-            conn.commit()
+            self.db_adapter.commit()
             conn.close()
             return True
         except Exception as e:
@@ -611,7 +610,7 @@ class DatabaseManager:
         """Get all users (admin function)"""
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
 
             cursor.execute("""
                 SELECT id, email, username, full_name, created_at, last_login
@@ -642,7 +641,7 @@ class DatabaseManager:
         """Save or update a CUJ for a specific user"""
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
 
             cursor.execute("""
                 INSERT INTO cujs (id, user_id, task, expectation, updated_at)
@@ -654,7 +653,7 @@ class DatabaseManager:
                 WHERE user_id = ?
             """, (cuj_id, user_id, task, expectation, user_id))
 
-            conn.commit()
+            self.db_adapter.commit()
             conn.close()
             return True
         except Exception as e:
@@ -676,9 +675,9 @@ class DatabaseManager:
         """Delete a CUJ for a specific user"""
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
             cursor.execute("DELETE FROM cujs WHERE id = ? AND user_id = ?", (cuj_id, user_id))
-            conn.commit()
+            self.db_adapter.commit()
             conn.close()
             return True
         except Exception as e:
@@ -724,7 +723,7 @@ class DatabaseManager:
         """Save video metadata for a specific user and return video ID"""
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
 
             cursor.execute("""
                 INSERT INTO videos (user_id, name, file_path, status, description,
@@ -733,7 +732,7 @@ class DatabaseManager:
             """, (user_id, name, file_path, description, duration_seconds, file_size_mb, resolution))
 
             video_id = cursor.lastrowid
-            conn.commit()
+            self.db_adapter.commit()
             conn.close()
             return video_id
         except Exception as e:
@@ -746,7 +745,7 @@ class DatabaseManager:
         """Save Drive video metadata for a specific user and return video ID"""
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
 
             cursor.execute("""
                 INSERT INTO videos (user_id, name, file_path, drive_file_id, drive_web_link,
@@ -757,7 +756,7 @@ class DatabaseManager:
                   duration_seconds, file_size_mb, resolution))
 
             video_id = cursor.lastrowid
-            conn.commit()
+            self.db_adapter.commit()
             conn.close()
             return video_id
         except Exception as e:
@@ -782,9 +781,9 @@ class DatabaseManager:
         """Delete a video for a specific user"""
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
             cursor.execute("DELETE FROM videos WHERE id = ? AND user_id = ?", (video_id, user_id))
-            conn.commit()
+            self.db_adapter.commit()
             conn.close()
             return True
         except Exception as e:
@@ -819,7 +818,7 @@ class DatabaseManager:
         """Save analysis result and return analysis ID"""
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
 
             cursor.execute("""
                 INSERT INTO analysis_results
@@ -830,7 +829,7 @@ class DatabaseManager:
                   observation, recommendation, key_moments, cost, raw_response))
 
             analysis_id = cursor.lastrowid
-            conn.commit()
+            self.db_adapter.commit()
             conn.close()
             return analysis_id
         except Exception as e:
@@ -879,7 +878,7 @@ class DatabaseManager:
     def get_latest_results(self, user_id: int) -> Dict:
         """Get latest analysis results for a specific user as dictionary keyed by CUJ ID"""
         conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = self.db_adapter.cursor()
 
         # Get most recent analysis for each CUJ belonging to the user
         cursor.execute("""
@@ -941,14 +940,14 @@ class DatabaseManager:
         """Delete analysis results by CUJ or video"""
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
 
             if cuj_id:
                 cursor.execute("DELETE FROM analysis_results WHERE cuj_id = ?", (cuj_id,))
             elif video_id:
                 cursor.execute("DELETE FROM analysis_results WHERE video_id = ?", (video_id,))
 
-            conn.commit()
+            self.db_adapter.commit()
             conn.close()
             return True
         except Exception as e:
@@ -971,7 +970,7 @@ class DatabaseManager:
         """
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
 
             cursor.execute("""
                 UPDATE analysis_results
@@ -983,7 +982,7 @@ class DatabaseManager:
                 WHERE id = ?
             """, (override_status, override_friction, notes, analysis_id))
 
-            conn.commit()
+            self.db_adapter.commit()
             conn.close()
             return True
         except Exception as e:
@@ -1029,12 +1028,12 @@ class DatabaseManager:
 
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
 
             cursor.execute("INSERT INTO sessions (name) VALUES (?)", (name,))
             session_id = cursor.lastrowid
 
-            conn.commit()
+            self.db_adapter.commit()
             conn.close()
             return session_id
         except Exception as e:
@@ -1045,7 +1044,7 @@ class DatabaseManager:
         """Mark session as completed"""
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
 
             cursor.execute("""
                 UPDATE sessions
@@ -1053,7 +1052,7 @@ class DatabaseManager:
                 WHERE id = ?
             """, (total_cost, session_id))
 
-            conn.commit()
+            self.db_adapter.commit()
             conn.close()
             return True
         except Exception as e:
@@ -1066,7 +1065,7 @@ class DatabaseManager:
         """Save a setting for a specific user"""
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
 
             cursor.execute("""
                 INSERT INTO settings (user_id, key, value, updated_at)
@@ -1076,7 +1075,7 @@ class DatabaseManager:
                     updated_at = CURRENT_TIMESTAMP
             """, (user_id, key, value))
 
-            conn.commit()
+            self.db_adapter.commit()
             conn.close()
             return True
         except Exception as e:
@@ -1087,7 +1086,7 @@ class DatabaseManager:
         """Get a setting value for a specific user"""
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
 
             cursor.execute("SELECT value FROM settings WHERE user_id = ? AND key = ?", (user_id, key))
             row = cursor.fetchone()
@@ -1104,13 +1103,13 @@ class DatabaseManager:
         """Save a YouTube API key for a user and return key ID"""
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
             cursor.execute("""
                 INSERT INTO youtube_api_keys (user_id, api_key, key_name)
                 VALUES (?, ?, ?)
             """, (user_id, api_key, key_name))
             key_id = cursor.lastrowid
-            conn.commit()
+            self.db_adapter.commit()
             conn.close()
             return key_id
         except Exception as e:
@@ -1121,7 +1120,7 @@ class DatabaseManager:
         """Get all YouTube API keys for a user (returns list of key strings only)"""
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
             cursor.execute("SELECT api_key FROM youtube_api_keys WHERE user_id = ? ORDER BY created_at", (user_id,))
             keys = [row['api_key'] for row in cursor.fetchall()]
             conn.close()
@@ -1134,7 +1133,7 @@ class DatabaseManager:
         """Get all YouTube API keys for a user with metadata"""
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
             cursor.execute("""
                 SELECT id, key_name, api_key, quota_used, created_at
                 FROM youtube_api_keys
@@ -1160,9 +1159,9 @@ class DatabaseManager:
         """Delete a YouTube API key"""
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
             cursor.execute("DELETE FROM youtube_api_keys WHERE id = ? AND user_id = ?", (key_id, user_id))
-            conn.commit()
+            self.db_adapter.commit()
             conn.close()
             return True
         except Exception as e:
@@ -1174,7 +1173,7 @@ class DatabaseManager:
     def get_statistics(self, user_id: int) -> Dict:
         """Get statistics for a specific user"""
         conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = self.db_adapter.cursor()
 
         # Total counts for creator analysis
         cursor.execute("SELECT COUNT(*) as count FROM briefs WHERE user_id = ?", (user_id,))
@@ -1246,7 +1245,7 @@ class DatabaseManager:
             List of dicts with 'date' and 'cost' keys, ordered chronologically
         """
         conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = self.db_adapter.cursor()
 
         cursor.execute("""
             SELECT
@@ -1279,7 +1278,7 @@ class DatabaseManager:
         """Save or create a brief and return brief ID"""
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
 
             cursor.execute("""
                 INSERT INTO briefs (user_id, name, description, brand_context, status, updated_at)
@@ -1287,7 +1286,7 @@ class DatabaseManager:
             """, (user_id, name, description, brand_context, status))
 
             brief_id = cursor.lastrowid
-            conn.commit()
+            self.db_adapter.commit()
             conn.close()
             return brief_id
         except Exception as e:
@@ -1310,7 +1309,7 @@ class DatabaseManager:
         """Get a specific brief by ID"""
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
 
             cursor.execute("""
                 SELECT id, user_id, name, description, brand_context, status, created_at, updated_at
@@ -1342,7 +1341,7 @@ class DatabaseManager:
         """Update a brief"""
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
 
             updates = []
             params = []
@@ -1369,7 +1368,7 @@ class DatabaseManager:
             query = f"UPDATE briefs SET {', '.join(updates)} WHERE id = ?"
             cursor.execute(query, params)
 
-            conn.commit()
+            self.db_adapter.commit()
             conn.close()
             return True
         except Exception as e:
@@ -1380,9 +1379,9 @@ class DatabaseManager:
         """Delete a brief"""
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
             cursor.execute("DELETE FROM briefs WHERE id = ? AND user_id = ?", (brief_id, user_id))
-            conn.commit()
+            self.db_adapter.commit()
             conn.close()
             return True
         except Exception as e:
@@ -1396,7 +1395,7 @@ class DatabaseManager:
         """Save a creator and return creator ID"""
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
 
             cursor.execute("""
                 INSERT INTO creators (user_id, name, primary_platform, notes, tags, updated_at)
@@ -1404,7 +1403,7 @@ class DatabaseManager:
             """, (user_id, name, primary_platform, notes, tags))
 
             creator_id = cursor.lastrowid
-            conn.commit()
+            self.db_adapter.commit()
             conn.close()
             return creator_id
         except Exception as e:
@@ -1430,7 +1429,7 @@ class DatabaseManager:
             creator_id = int(creator_id)
 
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
 
             cursor.execute("""
                 SELECT id, user_id, name, primary_platform, notes, tags, created_at, updated_at
@@ -1476,9 +1475,9 @@ class DatabaseManager:
         """Delete a creator"""
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
             cursor.execute("DELETE FROM creators WHERE id = ? AND user_id = ?", (creator_id, user_id))
-            conn.commit()
+            self.db_adapter.commit()
             conn.close()
             return True
         except Exception as e:
@@ -1493,7 +1492,7 @@ class DatabaseManager:
         """Save a social account and return account ID"""
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
 
             cursor.execute("""
                 INSERT INTO social_accounts
@@ -1502,7 +1501,7 @@ class DatabaseManager:
             """, (creator_id, platform, platform_user_id, handle, profile_url, verified, discovery_method))
 
             account_id = cursor.lastrowid
-            conn.commit()
+            self.db_adapter.commit()
             conn.close()
             return account_id
         except Exception as e:
@@ -1529,13 +1528,13 @@ class DatabaseManager:
         """Update last_fetched_at timestamp for a social account"""
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
             cursor.execute("""
                 UPDATE social_accounts
                 SET last_fetched_at = CURRENT_TIMESTAMP
                 WHERE id = ?
             """, (account_id,))
-            conn.commit()
+            self.db_adapter.commit()
             conn.close()
             return True
         except Exception as e:
@@ -1548,7 +1547,7 @@ class DatabaseManager:
         """Save platform analytics snapshot"""
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
 
             cursor.execute("""
                 INSERT INTO platform_analytics
@@ -1571,7 +1570,7 @@ class DatabaseManager:
             ))
 
             analytics_id = cursor.lastrowid
-            conn.commit()
+            self.db_adapter.commit()
             conn.close()
             return analytics_id
         except Exception as e:
@@ -1582,7 +1581,7 @@ class DatabaseManager:
         """Update the engagement rate for the most recent analytics entry"""
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
 
             cursor.execute("""
                 UPDATE platform_analytics
@@ -1595,7 +1594,7 @@ class DatabaseManager:
                 )
             """, (engagement_rate, social_account_id, social_account_id))
 
-            conn.commit()
+            self.db_adapter.commit()
             conn.close()
             return True
         except Exception as e:
@@ -1606,7 +1605,7 @@ class DatabaseManager:
         """Get the most recent analytics snapshot for a social account"""
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
 
             cursor.execute("""
                 SELECT * FROM platform_analytics
@@ -1645,7 +1644,7 @@ class DatabaseManager:
         """Link a creator to a brief"""
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
 
             # Check if link already exists
             cursor.execute("""
@@ -1664,7 +1663,7 @@ class DatabaseManager:
                 VALUES (?, ?, ?)
             """, (brief_id, creator_id, status))
 
-            conn.commit()
+            self.db_adapter.commit()
             conn.close()
             return True
         except Exception as e:
@@ -1677,12 +1676,12 @@ class DatabaseManager:
         """Unlink a creator from a brief"""
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
             cursor.execute("""
                 DELETE FROM brief_creators
                 WHERE brief_id = ? AND creator_id = ?
             """, (brief_id, creator_id))
-            conn.commit()
+            self.db_adapter.commit()
             conn.close()
             return True
         except Exception as e:
@@ -1695,7 +1694,7 @@ class DatabaseManager:
         """Save a creator analysis report"""
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
 
             cursor.execute("""
                 INSERT INTO creator_reports
@@ -1717,7 +1716,7 @@ class DatabaseManager:
             ))
 
             report_id = cursor.lastrowid
-            conn.commit()
+            self.db_adapter.commit()
             conn.close()
             return report_id
         except Exception as e:
@@ -1728,7 +1727,7 @@ class DatabaseManager:
         """Get the most recent report for a creator in a brief"""
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
 
             cursor.execute("""
                 SELECT * FROM creator_reports
@@ -1786,7 +1785,7 @@ class DatabaseManager:
         """
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
 
             # Verify the report belongs to the user (through the brief)
             cursor.execute("""
@@ -1803,7 +1802,7 @@ class DatabaseManager:
 
             # Delete the report
             cursor.execute("DELETE FROM creator_reports WHERE id = ?", (report_id,))
-            conn.commit()
+            self.db_adapter.commit()
             conn.close()
             return True
 
@@ -1817,7 +1816,7 @@ class DatabaseManager:
         """Save post analysis data"""
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
 
             cursor.execute("""
                 INSERT INTO post_analysis
@@ -1844,7 +1843,7 @@ class DatabaseManager:
             ))
 
             post_analysis_id = cursor.lastrowid
-            conn.commit()
+            self.db_adapter.commit()
             conn.close()
             return post_analysis_id
         except Exception as e:
@@ -1890,7 +1889,7 @@ class DatabaseManager:
             Query ID
         """
         conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = self.db_adapter.cursor()
 
         cursor.execute("""
             INSERT INTO deep_research_queries (
@@ -1917,7 +1916,7 @@ class DatabaseManager:
         ))
 
         query_id = cursor.lastrowid
-        conn.commit()
+        self.db_adapter.commit()
         conn.close()
         return query_id
 
@@ -1932,7 +1931,7 @@ class DatabaseManager:
             Query result dictionary or None if not found/expired
         """
         conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = self.db_adapter.cursor()
 
         cursor.execute("""
             SELECT * FROM deep_research_queries
@@ -2006,7 +2005,7 @@ class DatabaseManager:
         """
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
 
             # Check if there's an existing analytics record for today
             cursor.execute("""
@@ -2036,7 +2035,7 @@ class DatabaseManager:
                 """, (social_account_id, demographics_json))
                 print(f"  [DB] Created new platform_analytics record with demographics for account_id={social_account_id}")
 
-            conn.commit()
+            self.db_adapter.commit()
             conn.close()
         except Exception as e:
             print(f"  [DB ERROR] Failed to save demographics: {type(e).__name__}: {e}")
@@ -2054,7 +2053,7 @@ class DatabaseManager:
         """
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            cursor = self.db_adapter.cursor()
 
             cursor.execute("""
                 SELECT demographics_data, snapshot_date
@@ -2129,7 +2128,7 @@ class DatabaseManager:
         """
         import json
         conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = self.db_adapter.cursor()
 
         cursor.execute("""
             INSERT INTO campaign_assets (
@@ -2146,7 +2145,7 @@ class DatabaseManager:
         ))
 
         asset_id = cursor.lastrowid
-        conn.commit()
+        self.db_adapter.commit()
         conn.close()
 
         return asset_id
@@ -2206,7 +2205,7 @@ class DatabaseManager:
         """
         import json
         conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = self.db_adapter.cursor()
 
         cursor.execute("SELECT * FROM campaign_assets WHERE id = ?", (asset_id,))
         row = cursor.fetchone()
@@ -2250,7 +2249,7 @@ class DatabaseManager:
             True if deleted
         """
         conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = self.db_adapter.cursor()
 
         cursor.execute(
             "DELETE FROM campaign_assets WHERE id = ? AND user_id = ?",
@@ -2258,7 +2257,7 @@ class DatabaseManager:
         )
 
         deleted = cursor.rowcount > 0
-        conn.commit()
+        self.db_adapter.commit()
         conn.close()
 
         return deleted
@@ -2281,7 +2280,7 @@ class DatabaseManager:
             True if updated
         """
         conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = self.db_adapter.cursor()
 
         cursor.execute(
             "UPDATE campaign_assets SET status = ?, error_message = ? WHERE id = ?",
@@ -2289,7 +2288,7 @@ class DatabaseManager:
         )
 
         updated = cursor.rowcount > 0
-        conn.commit()
+        self.db_adapter.commit()
         conn.close()
 
         return updated

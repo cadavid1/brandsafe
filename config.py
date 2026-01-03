@@ -111,11 +111,24 @@ import os
 
 # Detect database type from environment
 DATABASE_URL = os.environ.get("DATABASE_URL")  # PostgreSQL connection string from Streamlit secrets
-# Validate DATABASE_URL - must be a proper connection string, not just "psql" or similar
-if DATABASE_URL and ("=" not in DATABASE_URL or len(DATABASE_URL) < 20):
-    print(f"Warning: Invalid DATABASE_URL detected ('{DATABASE_URL}'), falling back to SQLite")
-    DATABASE_URL = None
+
+# Validate DATABASE_URL - must be a proper connection string
+if DATABASE_URL:
+    # Strip whitespace and quotes that might have been added accidentally
+    DATABASE_URL = DATABASE_URL.strip().strip('"').strip("'")
+
+    # Check if it's a valid PostgreSQL connection string
+    if not (DATABASE_URL.startswith(("postgresql://", "postgres://")) and len(DATABASE_URL) > 20):
+        print(f"Warning: Invalid DATABASE_URL detected (must start with postgresql:// or postgres://)")
+        print(f"Got: {DATABASE_URL[:50]}..." if len(DATABASE_URL) > 50 else f"Got: {DATABASE_URL}")
+        DATABASE_URL = None
+
 DATABASE_TYPE = "postgresql" if DATABASE_URL else "sqlite"
+
+if DATABASE_TYPE == "postgresql":
+    print(f"Using PostgreSQL database (connection string length: {len(DATABASE_URL)})")
+else:
+    print(f"Using SQLite database")
 
 # SQLite configuration (local development)
 DATABASE_PATH = "./data/brandsafe.db"
