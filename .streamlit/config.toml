@@ -9,4 +9,4 @@ font = "sans serif"
 # Maximum upload size in MB (1 GB = 1024 MB)
 maxUploadSize = 1024
 enableCORS = false
-browser.gatherUsageStats = false
+gatherUsageStats = false

@@ -4,7 +4,12 @@ Gemini API client wrapper with support for video analysis
 
 import json
 import time
+import warnings
 from typing import Dict, Optional, Callable
+
+# Suppress FutureWarning for deprecated google.generativeai package
+warnings.filterwarnings('ignore', category=FutureWarning, module='google.generativeai')
+
 import google.generativeai as genai
 from google import genai as genai_client
 from google.genai import types
