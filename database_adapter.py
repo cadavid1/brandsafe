@@ -145,6 +145,13 @@ class DatabaseAdapter:
         # DATETIME -> TIMESTAMP
         converted = converted.replace("DATETIME", "TIMESTAMP")
 
+        # Boolean defaults: DEFAULT 0 -> DEFAULT FALSE, DEFAULT 1 -> DEFAULT TRUE
+        # Must be done before other replacements to avoid issues
+        import re
+        # Match BOOLEAN followed by DEFAULT 0 or DEFAULT 1
+        converted = re.sub(r'BOOLEAN\s+DEFAULT\s+0', 'BOOLEAN DEFAULT FALSE', converted, flags=re.IGNORECASE)
+        converted = re.sub(r'BOOLEAN\s+DEFAULT\s+1', 'BOOLEAN DEFAULT TRUE', converted, flags=re.IGNORECASE)
+
         # Date/time functions
         converted = converted.replace("DATE('now')", "CURRENT_DATE")
         converted = converted.replace("date('now')", "CURRENT_DATE")

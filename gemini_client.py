@@ -8,7 +8,7 @@ import warnings
 from typing import Dict, Optional, Callable
 
 # Suppress FutureWarning for deprecated google.generativeai package
-warnings.filterwarnings('ignore', message='.*google.generativeai.*')
+warnings.filterwarnings('ignore', category=FutureWarning)
 
 import google.generativeai as genai
 from google import genai as genai_client
