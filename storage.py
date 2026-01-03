@@ -372,7 +372,7 @@ class DatabaseManager:
         """Migrate existing single-user database to multi-user structure"""
         # Check if users table has any users
         cursor.execute("SELECT COUNT(*) as count FROM users")
-        user_count = cursor.fetchone()[0]
+        user_count = cursor.fetchone()['count']
 
         # Check if cujs table has user_id column
         if not self.db_adapter.check_column_exists(cursor, "cujs", "user_id"):
@@ -383,7 +383,7 @@ class DatabaseManager:
             # Only assign existing data to default user if there are users
             if user_count > 0:
                 cursor.execute("SELECT id FROM users LIMIT 1")
-                default_user_id = cursor.fetchone()[0]
+                default_user_id = cursor.fetchone()['id']
                 cursor.execute("UPDATE cujs SET user_id = ? WHERE user_id IS NULL", (default_user_id,))
 
         # Check if videos table has user_id column
@@ -394,7 +394,7 @@ class DatabaseManager:
             # Only assign existing data to default user if there are users
             if user_count > 0:
                 cursor.execute("SELECT id FROM users LIMIT 1")
-                default_user_id = cursor.fetchone()[0]
+                default_user_id = cursor.fetchone()['id']
                 cursor.execute("UPDATE videos SET user_id = ? WHERE user_id IS NULL", (default_user_id,))
 
         # Migrate settings table to per-user settings
@@ -425,7 +425,7 @@ class DatabaseManager:
             # Restore settings for default user if there are users
             if user_count > 0 and old_settings:
                 cursor.execute("SELECT id FROM users LIMIT 1")
-                default_user_id = cursor.fetchone()[0]
+                default_user_id = cursor.fetchone()['id']
 
                 for key, value in old_settings:
                     cursor.execute("""
