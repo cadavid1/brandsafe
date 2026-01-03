@@ -111,6 +111,10 @@ import os
 
 # Detect database type from environment
 DATABASE_URL = os.environ.get("DATABASE_URL")  # PostgreSQL connection string from Streamlit secrets
+# Validate DATABASE_URL - must be a proper connection string, not just "psql" or similar
+if DATABASE_URL and ("=" not in DATABASE_URL or len(DATABASE_URL) < 20):
+    print(f"Warning: Invalid DATABASE_URL detected ('{DATABASE_URL}'), falling back to SQLite")
+    DATABASE_URL = None
 DATABASE_TYPE = "postgresql" if DATABASE_URL else "sqlite"
 
 # SQLite configuration (local development)
