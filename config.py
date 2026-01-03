@@ -107,7 +107,16 @@ AVERAGE_PROMPT_TOKENS = 1000   # System prompt + CUJ description
 AVERAGE_RESPONSE_TOKENS = 500  # Expected JSON response
 
 # Database configuration
+import os
+
+# Detect database type from environment
+DATABASE_URL = os.environ.get("DATABASE_URL")  # PostgreSQL connection string from Streamlit secrets
+DATABASE_TYPE = "postgresql" if DATABASE_URL else "sqlite"
+
+# SQLite configuration (local development)
 DATABASE_PATH = "./data/brandsafe.db"
+
+# Storage paths
 VIDEO_STORAGE_PATH = "./data/videos/"
 EXPORT_STORAGE_PATH = "./data/exports/"
 CAMPAIGN_ASSETS_PATH = "./data/campaign_assets/"

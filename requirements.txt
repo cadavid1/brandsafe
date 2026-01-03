@@ -21,3 +21,4 @@ requests>=2.31.0
 plotly>=5.18.0
 numpy>=1.24.0
 kaleido
+psycopg2-binary>=2.9.9
