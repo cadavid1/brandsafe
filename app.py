@@ -501,7 +501,13 @@ with tab_home:
                     if not brief_creators.empty:
                         st.caption(f"↳ {len(brief_creators)} creator(s) linked")
 
-                    st.caption(f"↳ Created {brief['created_at'][:10]}")
+                    # Handle both string (SQLite) and Timestamp (PostgreSQL) formats
+                    created_date = brief['created_at']
+                    if hasattr(created_date, 'strftime'):
+                        created_date = created_date.strftime('%Y-%m-%d')
+                    else:
+                        created_date = str(created_date)[:10]
+                    st.caption(f"↳ Created {created_date}")
                     st.markdown("")
         else:
             st.info("💡 **No activity yet**\n\nCreate your first brief to get started!")
@@ -1316,7 +1322,13 @@ with tab_briefs:
                     st.markdown(f"**Description:** {brief.get('description', 'N/A')}")
                     st.markdown(f"**Brand Context:**")
                     st.caption(brief['brand_context'][:300] + "..." if len(brief['brand_context']) > 300 else brief['brand_context'])
-                    st.caption(f"**Created:** {brief['created_at'][:10]}")
+                    # Handle both string (SQLite) and Timestamp (PostgreSQL) formats
+                    created_date = brief['created_at']
+                    if hasattr(created_date, 'strftime'):
+                        created_date = created_date.strftime('%Y-%m-%d')
+                    else:
+                        created_date = str(created_date)[:10]
+                    st.caption(f"**Created:** {created_date}")
 
                     # Show linked creators
                     linked_creators = db.get_creators_for_brief(brief['id'])
@@ -1492,7 +1504,13 @@ with tab_creators:
                 with col1:
                     if creator.get('notes'):
                         st.markdown(f"**Notes:** {creator['notes']}")
-                    st.caption(f"**Added:** {creator['created_at'][:10]}")
+                    # Handle both string (SQLite) and Timestamp (PostgreSQL) formats
+                    created_date = creator['created_at']
+                    if hasattr(created_date, 'strftime'):
+                        created_date = created_date.strftime('%Y-%m-%d')
+                    else:
+                        created_date = str(created_date)[:10]
+                    st.caption(f"**Added:** {created_date}")
 
                     # Show social accounts
                     accounts_df = db.get_social_accounts(creator['id'])
@@ -1501,7 +1519,13 @@ with tab_creators:
                         for _, account in accounts_df.iterrows():
                             st.caption(f"  • {account['platform'].title()}: [{account.get('handle', 'N/A')}]({account['profile_url']})")
                             if account.get('last_fetched_at'):
-                                st.caption(f"    Last fetched: {account['last_fetched_at'][:10]}")
+                                # Handle both string (SQLite) and Timestamp (PostgreSQL) formats
+                                fetched_date = account['last_fetched_at']
+                                if hasattr(fetched_date, 'strftime'):
+                                    fetched_date = fetched_date.strftime('%Y-%m-%d')
+                                else:
+                                    fetched_date = str(fetched_date)[:10]
+                                st.caption(f"    Last fetched: {fetched_date}")
 
                     # Add additional social account
                     with st.expander("➕ Add Another Social Account"):
@@ -2738,7 +2762,13 @@ with tab_assets:
                                             with col:
                                                 if os.path.exists(asset['file_path']):
                                                     st.image(asset['file_path'], width='stretch')
-                                                    st.caption(f"Generated: {asset['created_at']}")
+                                                    # Handle both string (SQLite) and Timestamp (PostgreSQL) formats
+                                                    created_date = asset['created_at']
+                                                    if hasattr(created_date, 'strftime'):
+                                                        created_date = created_date.strftime('%Y-%m-%d %H:%M')
+                                                    else:
+                                                        created_date = str(created_date)
+                                                    st.caption(f"Generated: {created_date}")
                                                     st.caption(f"Cost: ${asset['cost']:.3f}")
 
                                                     col_btn1, col_btn2 = st.columns(2)
@@ -2896,7 +2926,13 @@ with tab_assets:
 
                                         with col_v2:
                                             st.caption(f"**Type:** {asset['asset_subtype'].title()}")
-                                            st.caption(f"**Generated:** {asset['created_at']}")
+                                            # Handle both string (SQLite) and Timestamp (PostgreSQL) formats
+                                            created_date = asset['created_at']
+                                            if hasattr(created_date, 'strftime'):
+                                                created_date = created_date.strftime('%Y-%m-%d %H:%M')
+                                            else:
+                                                created_date = str(created_date)
+                                            st.caption(f"**Generated:** {created_date}")
                                             st.caption(f"**Cost:** ${asset['cost']:.2f}")
 
                                             with open(asset['file_path'], 'rb') as f:

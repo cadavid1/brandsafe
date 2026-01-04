@@ -9,8 +9,12 @@ import pandas as pd
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
+import warnings
 import config
 from database_adapter import get_database_adapter
+
+# Suppress pandas warning about psycopg2 connections - we handle PostgreSQL correctly
+warnings.filterwarnings('ignore', message='.*pandas only supports SQLAlchemy.*')
 
 
 class DatabaseManager:
