@@ -1724,7 +1724,7 @@ with tab_analysis:
 
                         # Get all briefs this creator is linked to
                         conn = db._get_connection()
-                        cursor = conn.cursor()
+                        cursor = db.db_adapter.cursor()
                         cursor.execute("""
                             SELECT b.name
                             FROM briefs b
@@ -1732,8 +1732,8 @@ with tab_analysis:
                             WHERE bc.creator_id = ? AND b.user_id = ?
                             ORDER BY b.name
                         """, (creator_id, user_id))
-                        brief_names = [row[0] for row in cursor.fetchall()]
-                        conn.close()
+                        brief_names = [row['name'] for row in cursor.fetchall()]
+                        # Don't close the connection - it's managed by the database adapter
 
                         # Get social accounts
                         accounts = db.get_social_accounts(creator_id)

@@ -29,8 +29,22 @@ class DatabaseManager:
             Path(config.DATABASE_PATH).parent.mkdir(parents=True, exist_ok=True)
 
     def _get_connection(self):
-        """Get database connection"""
+        """Get database connection, ensuring it's open"""
+        if not self.db_adapter.conn:
+            self.db_adapter.connect()
         return self.db_adapter.conn
+
+    def _get_pandas_connection(self):
+        """Get a fresh connection for pandas operations to avoid closed connection issues"""
+        if self.db_adapter.db_type == "sqlite":
+            import sqlite3
+            # Create a fresh connection for pandas to avoid closed connection issues
+            conn = sqlite3.connect(self.db_adapter.connection_string, check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            return conn
+        else:
+            # For PostgreSQL, use the existing connection
+            return self._get_connection()
 
     def _init_database(self):
         """Initialize database schema"""
@@ -540,7 +554,6 @@ class DatabaseManager:
             """, (username,))
 
             row = cursor.fetchone()
-            conn.close()
 
             if row:
                 return {
@@ -570,7 +583,6 @@ class DatabaseManager:
             """, (email,))
 
             row = cursor.fetchone()
-            conn.close()
 
             if row:
                 return {
@@ -600,7 +612,6 @@ class DatabaseManager:
             """, (user_id,))
 
             self.db_adapter.commit()
-            conn.close()
             return True
         except Exception as e:
             print(f"Error updating last login: {e}")
@@ -629,7 +640,6 @@ class DatabaseManager:
                     'last_login': row['last_login']
                 })
 
-            conn.close()
             return users
         except Exception as e:
             print(f"Error getting all users: {e}")
@@ -654,7 +664,6 @@ class DatabaseManager:
             """, (cuj_id, user_id, task, expectation, user_id))
 
             self.db_adapter.commit()
-            conn.close()
             return True
         except Exception as e:
             print(f"Error saving CUJ: {e}")
@@ -662,14 +671,17 @@ class DatabaseManager:
 
     def get_cujs(self, user_id: int) -> pd.DataFrame:
         """Get all CUJs for a specific user as DataFrame"""
-        conn = self._get_connection()
-        df = pd.read_sql_query(
-            "SELECT id, task, expectation FROM cujs WHERE user_id = ? ORDER BY created_at",
-            conn,
-            params=(user_id,)
-        )
-        conn.close()
-        return df
+        conn = self._get_pandas_connection()
+        try:
+            df = pd.read_sql_query(
+                "SELECT id, task, expectation FROM cujs WHERE user_id = ? ORDER BY created_at",
+                conn,
+                params=(user_id,)
+            )
+            return df
+        finally:
+            if self.db_adapter.db_type == "sqlite":
+                conn.close()
 
     def delete_cuj(self, user_id: int, cuj_id: str) -> bool:
         """Delete a CUJ for a specific user"""
@@ -678,7 +690,6 @@ class DatabaseManager:
             cursor = self.db_adapter.cursor()
             cursor.execute("DELETE FROM cujs WHERE id = ? AND user_id = ?", (cuj_id, user_id))
             self.db_adapter.commit()
-            conn.close()
             return True
         except Exception as e:
             print(f"Error deleting CUJ: {e}")
@@ -733,7 +744,6 @@ class DatabaseManager:
 
             video_id = cursor.lastrowid
             self.db_adapter.commit()
-            conn.close()
             return video_id
         except Exception as e:
             print(f"Error saving video: {e}")
@@ -757,7 +767,6 @@ class DatabaseManager:
 
             video_id = cursor.lastrowid
             self.db_adapter.commit()
-            conn.close()
             return video_id
         except Exception as e:
             print(f"Error saving Drive video: {e}")
@@ -765,17 +774,20 @@ class DatabaseManager:
 
     def get_videos(self, user_id: int) -> pd.DataFrame:
         """Get all videos for a specific user as DataFrame"""
-        conn = self._get_connection()
-        df = pd.read_sql_query("""
-            SELECT id, name, file_path, status, description,
-                   duration_seconds as duration, file_size_mb as size_mb,
-                   resolution, uploaded_at
-            FROM videos
-            WHERE user_id = ?
-            ORDER BY uploaded_at DESC
-        """, conn, params=(user_id,))
-        conn.close()
-        return df
+        conn = self._get_pandas_connection()
+        try:
+            df = pd.read_sql_query("""
+                SELECT id, name, file_path, status, description,
+                       duration_seconds as duration, file_size_mb as size_mb,
+                       resolution, uploaded_at
+                FROM videos
+                WHERE user_id = ?
+                ORDER BY uploaded_at DESC
+            """, conn, params=(user_id,))
+            return df
+        finally:
+            if self.db_adapter.db_type == "sqlite":
+                conn.close()
 
     def delete_video(self, user_id: int, video_id: int) -> bool:
         """Delete a video for a specific user"""
@@ -784,7 +796,6 @@ class DatabaseManager:
             cursor = self.db_adapter.cursor()
             cursor.execute("DELETE FROM videos WHERE id = ? AND user_id = ?", (video_id, user_id))
             self.db_adapter.commit()
-            conn.close()
             return True
         except Exception as e:
             print(f"Error deleting video: {e}")
@@ -830,7 +841,6 @@ class DatabaseManager:
 
             analysis_id = cursor.lastrowid
             self.db_adapter.commit()
-            conn.close()
             return analysis_id
         except Exception as e:
             print(f"Error saving analysis: {e}")
@@ -838,7 +848,7 @@ class DatabaseManager:
 
     def get_analysis_results(self, user_id: int, limit: Optional[int] = None) -> pd.DataFrame:
         """Get analysis results for a specific user as DataFrame"""
-        conn = self._get_connection()
+        conn = self._get_pandas_connection()
 
         query = """
             SELECT
@@ -871,9 +881,12 @@ class DatabaseManager:
         if limit:
             query += f" LIMIT {limit}"
 
-        df = pd.read_sql_query(query, conn, params=(user_id,))
-        conn.close()
-        return df
+        try:
+            df = pd.read_sql_query(query, conn, params=(user_id,))
+            return df
+        finally:
+            if self.db_adapter.db_type == "sqlite":
+                conn.close()
 
     def get_latest_results(self, user_id: int) -> Dict:
         """Get latest analysis results for a specific user as dictionary keyed by CUJ ID"""
@@ -933,7 +946,6 @@ class DatabaseManager:
                 'human_notes': row['human_notes']
             }
 
-        conn.close()
         return results
 
     def delete_analysis_results(self, cuj_id: str = None, video_id: int = None) -> bool:
@@ -948,7 +960,6 @@ class DatabaseManager:
                 cursor.execute("DELETE FROM analysis_results WHERE video_id = ?", (video_id,))
 
             self.db_adapter.commit()
-            conn.close()
             return True
         except Exception as e:
             print(f"Error deleting analysis results: {e}")
@@ -983,7 +994,6 @@ class DatabaseManager:
             """, (override_status, override_friction, notes, analysis_id))
 
             self.db_adapter.commit()
-            conn.close()
             return True
         except Exception as e:
             print(f"Error verifying analysis: {e}")
@@ -1034,7 +1044,6 @@ class DatabaseManager:
             session_id = cursor.lastrowid
 
             self.db_adapter.commit()
-            conn.close()
             return session_id
         except Exception as e:
             print(f"Error creating session: {e}")
@@ -1053,7 +1062,6 @@ class DatabaseManager:
             """, (total_cost, session_id))
 
             self.db_adapter.commit()
-            conn.close()
             return True
         except Exception as e:
             print(f"Error completing session: {e}")
@@ -1076,7 +1084,6 @@ class DatabaseManager:
             """, (user_id, key, value))
 
             self.db_adapter.commit()
-            conn.close()
             return True
         except Exception as e:
             print(f"Error saving setting: {e}")
@@ -1091,7 +1098,6 @@ class DatabaseManager:
             cursor.execute("SELECT value FROM settings WHERE user_id = ? AND key = ?", (user_id, key))
             row = cursor.fetchone()
 
-            conn.close()
             return row['value'] if row else default
         except Exception as e:
             print(f"Error getting setting: {e}")
@@ -1110,7 +1116,6 @@ class DatabaseManager:
             """, (user_id, api_key, key_name))
             key_id = cursor.lastrowid
             self.db_adapter.commit()
-            conn.close()
             return key_id
         except Exception as e:
             print(f"Error saving YouTube API key: {e}")
@@ -1123,7 +1128,6 @@ class DatabaseManager:
             cursor = self.db_adapter.cursor()
             cursor.execute("SELECT api_key FROM youtube_api_keys WHERE user_id = ? ORDER BY created_at", (user_id,))
             keys = [row['api_key'] for row in cursor.fetchall()]
-            conn.close()
             return keys
         except Exception as e:
             print(f"Error getting YouTube API keys: {e}")
@@ -1149,7 +1153,6 @@ class DatabaseManager:
                     'quota_used': row['quota_used'],
                     'created_at': row['created_at']
                 })
-            conn.close()
             return keys
         except Exception as e:
             print(f"Error getting YouTube API key info: {e}")
@@ -1162,7 +1165,6 @@ class DatabaseManager:
             cursor = self.db_adapter.cursor()
             cursor.execute("DELETE FROM youtube_api_keys WHERE id = ? AND user_id = ?", (key_id, user_id))
             self.db_adapter.commit()
-            conn.close()
             return True
         except Exception as e:
             print(f"Error deleting YouTube API key: {e}")
@@ -1219,7 +1221,6 @@ class DatabaseManager:
         """, (user_id,))
         status_counts = {row['status']: row['count'] for row in cursor.fetchall()}
 
-        conn.close()
 
         return {
             'total_briefs': total_briefs,
@@ -1259,7 +1260,6 @@ class DatabaseManager:
         """, (user_id, days))
 
         results = cursor.fetchall()
-        conn.close()
 
         # Convert to list of dicts
         cost_history = [
@@ -1287,7 +1287,6 @@ class DatabaseManager:
 
             brief_id = cursor.lastrowid
             self.db_adapter.commit()
-            conn.close()
             return brief_id
         except Exception as e:
             print(f"Error saving brief: {e}")
@@ -1295,15 +1294,18 @@ class DatabaseManager:
 
     def get_briefs(self, user_id: int) -> pd.DataFrame:
         """Get all briefs for a specific user"""
-        conn = self._get_connection()
-        df = pd.read_sql_query("""
-            SELECT id, name, description, brand_context, status, created_at, updated_at
-            FROM briefs
-            WHERE user_id = ?
-            ORDER BY updated_at DESC
-        """, conn, params=(user_id,))
-        conn.close()
-        return df
+        conn = self._get_pandas_connection()
+        try:
+            df = pd.read_sql_query("""
+                SELECT id, name, description, brand_context, status, created_at, updated_at
+                FROM briefs
+                WHERE user_id = ?
+                ORDER BY updated_at DESC
+            """, conn, params=(user_id,))
+            return df
+        finally:
+            if self.db_adapter.db_type == "sqlite":
+                conn.close()
 
     def get_brief(self, brief_id: int) -> Optional[Dict]:
         """Get a specific brief by ID"""
@@ -1318,7 +1320,6 @@ class DatabaseManager:
             """, (brief_id,))
 
             row = cursor.fetchone()
-            conn.close()
 
             if row:
                 return {
@@ -1369,7 +1370,6 @@ class DatabaseManager:
             cursor.execute(query, params)
 
             self.db_adapter.commit()
-            conn.close()
             return True
         except Exception as e:
             print(f"Error updating brief: {e}")
@@ -1382,7 +1382,6 @@ class DatabaseManager:
             cursor = self.db_adapter.cursor()
             cursor.execute("DELETE FROM briefs WHERE id = ? AND user_id = ?", (brief_id, user_id))
             self.db_adapter.commit()
-            conn.close()
             return True
         except Exception as e:
             print(f"Error deleting brief: {e}")
@@ -1404,7 +1403,6 @@ class DatabaseManager:
 
             creator_id = cursor.lastrowid
             self.db_adapter.commit()
-            conn.close()
             return creator_id
         except Exception as e:
             print(f"Error saving creator: {e}")
@@ -1412,15 +1410,18 @@ class DatabaseManager:
 
     def get_creators(self, user_id: int) -> pd.DataFrame:
         """Get all creators for a specific user"""
-        conn = self._get_connection()
-        df = pd.read_sql_query("""
-            SELECT id, name, primary_platform, notes, tags, created_at, updated_at
-            FROM creators
-            WHERE user_id = ?
-            ORDER BY created_at DESC
-        """, conn, params=(user_id,))
-        conn.close()
-        return df
+        conn = self._get_pandas_connection()
+        try:
+            df = pd.read_sql_query("""
+                SELECT id, name, primary_platform, notes, tags, created_at, updated_at
+                FROM creators
+                WHERE user_id = ?
+                ORDER BY created_at DESC
+            """, conn, params=(user_id,))
+            return df
+        finally:
+            if self.db_adapter.db_type == "sqlite":
+                conn.close()
 
     def get_creator(self, creator_id: int) -> Optional[Dict]:
         """Get a specific creator by ID"""
@@ -1438,7 +1439,6 @@ class DatabaseManager:
             """, (creator_id,))
 
             row = cursor.fetchone()
-            conn.close()
 
             if row:
                 return {
@@ -1460,16 +1460,19 @@ class DatabaseManager:
 
     def get_creators_for_brief(self, brief_id: int) -> pd.DataFrame:
         """Get all creators linked to a specific brief"""
-        conn = self._get_connection()
-        df = pd.read_sql_query("""
-            SELECT c.id, c.name, c.primary_platform, c.notes, c.tags, bc.status as brief_status, bc.added_at
-            FROM creators c
-            JOIN brief_creators bc ON c.id = bc.creator_id
-            WHERE bc.brief_id = ?
-            ORDER BY bc.added_at DESC
-        """, conn, params=(brief_id,))
-        conn.close()
-        return df
+        conn = self._get_pandas_connection()
+        try:
+            df = pd.read_sql_query("""
+                SELECT c.id, c.name, c.primary_platform, c.notes, c.tags, bc.status as brief_status, bc.added_at
+                FROM creators c
+                JOIN brief_creators bc ON c.id = bc.creator_id
+                WHERE bc.brief_id = ?
+                ORDER BY bc.added_at DESC
+            """, conn, params=(brief_id,))
+            return df
+        finally:
+            if self.db_adapter.db_type == "sqlite":
+                conn.close()
 
     def delete_creator(self, user_id: int, creator_id: int) -> bool:
         """Delete a creator"""
@@ -1478,7 +1481,6 @@ class DatabaseManager:
             cursor = self.db_adapter.cursor()
             cursor.execute("DELETE FROM creators WHERE id = ? AND user_id = ?", (creator_id, user_id))
             self.db_adapter.commit()
-            conn.close()
             return True
         except Exception as e:
             print(f"Error deleting creator: {e}")
@@ -1502,7 +1504,6 @@ class DatabaseManager:
 
             account_id = cursor.lastrowid
             self.db_adapter.commit()
-            conn.close()
             return account_id
         except Exception as e:
             print(f"Error saving social account: {e}")
@@ -1513,16 +1514,19 @@ class DatabaseManager:
         # Convert numpy types to native Python int
         creator_id = int(creator_id)
 
-        conn = self._get_connection()
-        df = pd.read_sql_query("""
-            SELECT id, platform, platform_user_id, handle, profile_url,
-                   verified, discovery_method, last_fetched_at, created_at
-            FROM social_accounts
-            WHERE creator_id = ?
-            ORDER BY created_at
-        """, conn, params=(creator_id,))
-        conn.close()
-        return df
+        conn = self._get_pandas_connection()
+        try:
+            df = pd.read_sql_query("""
+                SELECT id, platform, platform_user_id, handle, profile_url,
+                       verified, discovery_method, last_fetched_at, created_at
+                FROM social_accounts
+                WHERE creator_id = ?
+                ORDER BY created_at
+            """, conn, params=(creator_id,))
+            return df
+        finally:
+            if self.db_adapter.db_type == "sqlite":
+                conn.close()
 
     def update_social_account_fetch_time(self, account_id: int) -> bool:
         """Update last_fetched_at timestamp for a social account"""
@@ -1535,7 +1539,6 @@ class DatabaseManager:
                 WHERE id = ?
             """, (account_id,))
             self.db_adapter.commit()
-            conn.close()
             return True
         except Exception as e:
             print(f"Error updating fetch time: {e}")
@@ -1571,7 +1574,6 @@ class DatabaseManager:
 
             analytics_id = cursor.lastrowid
             self.db_adapter.commit()
-            conn.close()
             return analytics_id
         except Exception as e:
             print(f"Error saving platform analytics: {e}")
@@ -1595,7 +1597,6 @@ class DatabaseManager:
             """, (engagement_rate, social_account_id, social_account_id))
 
             self.db_adapter.commit()
-            conn.close()
             return True
         except Exception as e:
             print(f"Error updating engagement rate: {e}")
@@ -1615,7 +1616,6 @@ class DatabaseManager:
             """, (social_account_id,))
 
             row = cursor.fetchone()
-            conn.close()
 
             if row:
                 return {
@@ -1654,7 +1654,6 @@ class DatabaseManager:
 
             existing = cursor.fetchone()
             if existing:
-                conn.close()
                 print(f"Creator {creator_id} is already linked to brief {brief_id}")
                 return False
 
@@ -1664,7 +1663,6 @@ class DatabaseManager:
             """, (brief_id, creator_id, status))
 
             self.db_adapter.commit()
-            conn.close()
             return True
         except Exception as e:
             print(f"Error linking creator to brief: {e}")
@@ -1682,7 +1680,6 @@ class DatabaseManager:
                 WHERE brief_id = ? AND creator_id = ?
             """, (brief_id, creator_id))
             self.db_adapter.commit()
-            conn.close()
             return True
         except Exception as e:
             print(f"Error unlinking creator from brief: {e}")
@@ -1717,7 +1714,6 @@ class DatabaseManager:
 
             report_id = cursor.lastrowid
             self.db_adapter.commit()
-            conn.close()
             return report_id
         except Exception as e:
             print(f"Error saving creator report: {e}")
@@ -1737,7 +1733,6 @@ class DatabaseManager:
             """, (brief_id, creator_id))
 
             row = cursor.fetchone()
-            conn.close()
 
             if row:
                 return {
@@ -1761,16 +1756,19 @@ class DatabaseManager:
 
     def get_reports_for_brief(self, brief_id: int) -> pd.DataFrame:
         """Get all reports for a brief"""
-        conn = self._get_connection()
-        df = pd.read_sql_query("""
-            SELECT cr.*, c.name as creator_name, c.primary_platform
-            FROM creator_reports cr
-            JOIN creators c ON cr.creator_id = c.id
-            WHERE cr.brief_id = ?
-            ORDER BY cr.generated_at DESC
-        """, conn, params=(brief_id,))
-        conn.close()
-        return df
+        conn = self._get_pandas_connection()
+        try:
+            df = pd.read_sql_query("""
+                SELECT cr.*, c.name as creator_name, c.primary_platform
+                FROM creator_reports cr
+                JOIN creators c ON cr.creator_id = c.id
+                WHERE cr.brief_id = ?
+                ORDER BY cr.generated_at DESC
+            """, conn, params=(brief_id,))
+            return df
+        finally:
+            if self.db_adapter.db_type == "sqlite":
+                conn.close()
 
     def delete_creator_report(self, report_id: int, user_id: int) -> bool:
         """
@@ -1797,13 +1795,11 @@ class DatabaseManager:
 
             if not cursor.fetchone():
                 print(f"Report {report_id} not found or doesn't belong to user {user_id}")
-                conn.close()
                 return False
 
             # Delete the report
             cursor.execute("DELETE FROM creator_reports WHERE id = ?", (report_id,))
             self.db_adapter.commit()
-            conn.close()
             return True
 
         except Exception as e:
@@ -1844,7 +1840,6 @@ class DatabaseManager:
 
             post_analysis_id = cursor.lastrowid
             self.db_adapter.commit()
-            conn.close()
             return post_analysis_id
         except Exception as e:
             print(f"Error saving post analysis: {e}")
@@ -1852,15 +1847,18 @@ class DatabaseManager:
 
     def get_posts_for_account(self, social_account_id: int, limit: int = 50) -> pd.DataFrame:
         """Get analyzed posts for a social account"""
-        conn = self._get_connection()
-        df = pd.read_sql_query("""
-            SELECT * FROM post_analysis
-            WHERE social_account_id = ?
-            ORDER BY post_date DESC
-            LIMIT ?
-        """, conn, params=(social_account_id, limit))
-        conn.close()
-        return df
+        conn = self._get_pandas_connection()
+        try:
+            df = pd.read_sql_query("""
+                SELECT * FROM post_analysis
+                WHERE social_account_id = ?
+                ORDER BY post_date DESC
+                LIMIT ?
+            """, conn, params=(social_account_id, limit))
+            return df
+        finally:
+            if self.db_adapter.db_type == "sqlite":
+                conn.close()
 
     # === Deep Research Methods ===
 
@@ -1917,7 +1915,6 @@ class DatabaseManager:
 
         query_id = cursor.lastrowid
         self.db_adapter.commit()
-        conn.close()
         return query_id
 
     def get_cached_deep_research(self, query_hash: str) -> Optional[Dict]:
@@ -1943,7 +1940,6 @@ class DatabaseManager:
         """, (query_hash,))
 
         row = cursor.fetchone()
-        conn.close()
 
         if row:
             return {
@@ -1977,23 +1973,24 @@ class DatabaseManager:
         Returns:
             DataFrame of queries
         """
-        conn = self._get_connection()
-
-        if query_type:
-            df = pd.read_sql_query("""
-                SELECT * FROM deep_research_queries
-                WHERE creator_id = ? AND query_type = ?
-                ORDER BY created_at DESC
-            """, conn, params=(creator_id, query_type))
-        else:
-            df = pd.read_sql_query("""
-                SELECT * FROM deep_research_queries
-                WHERE creator_id = ?
-                ORDER BY created_at DESC
-            """, conn, params=(creator_id,))
-
-        conn.close()
-        return df
+        conn = self._get_pandas_connection()
+        try:
+            if query_type:
+                df = pd.read_sql_query("""
+                    SELECT * FROM deep_research_queries
+                    WHERE creator_id = ? AND query_type = ?
+                    ORDER BY created_at DESC
+                """, conn, params=(creator_id, query_type))
+            else:
+                df = pd.read_sql_query("""
+                    SELECT * FROM deep_research_queries
+                    WHERE creator_id = ?
+                    ORDER BY created_at DESC
+                """, conn, params=(creator_id,))
+            return df
+        finally:
+            if self.db_adapter.db_type == "sqlite":
+                conn.close()
 
     def save_demographics_data(self, social_account_id: int, demographics: Dict):
         """
@@ -2036,7 +2033,6 @@ class DatabaseManager:
                 print(f"  [DB] Created new platform_analytics record with demographics for account_id={social_account_id}")
 
             self.db_adapter.commit()
-            conn.close()
         except Exception as e:
             print(f"  [DB ERROR] Failed to save demographics: {type(e).__name__}: {e}")
             raise
@@ -2067,7 +2063,6 @@ class DatabaseManager:
             """, (social_account_id,))
 
             row = cursor.fetchone()
-            conn.close()
 
             if row and row['demographics_data']:
                 try:
@@ -2146,7 +2141,6 @@ class DatabaseManager:
 
         asset_id = cursor.lastrowid
         self.db_adapter.commit()
-        conn.close()
 
         return asset_id
 
@@ -2169,7 +2163,7 @@ class DatabaseManager:
         Returns:
             DataFrame of assets
         """
-        conn = self._get_connection()
+        conn = self._get_pandas_connection()
 
         query = "SELECT * FROM campaign_assets WHERE user_id = ?"
         params = [user_id]
@@ -2188,10 +2182,12 @@ class DatabaseManager:
 
         query += " ORDER BY created_at DESC"
 
-        df = pd.read_sql_query(query, conn, params=params)
-        conn.close()
-
-        return df
+        try:
+            df = pd.read_sql_query(query, conn, params=params)
+            return df
+        finally:
+            if self.db_adapter.db_type == "sqlite":
+                conn.close()
 
     def get_campaign_asset(self, asset_id: int) -> Optional[dict]:
         """
@@ -2209,7 +2205,6 @@ class DatabaseManager:
 
         cursor.execute("SELECT * FROM campaign_assets WHERE id = ?", (asset_id,))
         row = cursor.fetchone()
-        conn.close()
 
         if row:
             columns = [
@@ -2258,7 +2253,6 @@ class DatabaseManager:
 
         deleted = cursor.rowcount > 0
         self.db_adapter.commit()
-        conn.close()
 
         return deleted
 
@@ -2289,7 +2283,6 @@ class DatabaseManager:
 
         updated = cursor.rowcount > 0
         self.db_adapter.commit()
-        conn.close()
 
         return updated
 
