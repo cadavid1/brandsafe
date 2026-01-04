@@ -46,6 +46,33 @@ class DatabaseManager:
             # For PostgreSQL, use the existing connection
             return self._get_connection()
 
+    def _read_sql_query(self, query: str, params=None) -> pd.DataFrame:
+        """
+        Execute a SQL query and return results as DataFrame with proper database compatibility
+
+        Args:
+            query: SQL query string (using SQLite syntax with ? placeholders)
+            params: Query parameters tuple
+
+        Returns:
+            pandas DataFrame with query results
+        """
+        conn = self._get_pandas_connection()
+        try:
+            # Convert query for the target database
+            converted_query = self.db_adapter.convert_query(query)
+
+            # Execute query with pandas
+            if params:
+                df = pd.read_sql_query(converted_query, conn, params=params)
+            else:
+                df = pd.read_sql_query(converted_query, conn)
+            return df
+        finally:
+            # Only close SQLite connections (PostgreSQL connection is managed elsewhere)
+            if self.db_adapter.db_type == "sqlite":
+                conn.close()
+
     def _init_database(self):
         """Initialize database schema"""
         cursor = self.db_adapter.cursor()
@@ -682,17 +709,10 @@ class DatabaseManager:
 
     def get_cujs(self, user_id: int) -> pd.DataFrame:
         """Get all CUJs for a specific user as DataFrame"""
-        conn = self._get_pandas_connection()
-        try:
-            df = pd.read_sql_query(
-                "SELECT id, task, expectation FROM cujs WHERE user_id = ? ORDER BY created_at",
-                conn,
-                params=(user_id,)
-            )
-            return df
-        finally:
-            if self.db_adapter.db_type == "sqlite":
-                conn.close()
+        return self._read_sql_query(
+            "SELECT id, task, expectation FROM cujs WHERE user_id = ? ORDER BY created_at",
+            params=(user_id,)
+        )
 
     def delete_cuj(self, user_id: int, cuj_id: str) -> bool:
         """Delete a CUJ for a specific user"""
@@ -747,13 +767,23 @@ class DatabaseManager:
             conn = self._get_connection()
             cursor = self.db_adapter.cursor()
 
-            cursor.execute("""
-                INSERT INTO videos (user_id, name, file_path, status, description,
-                                  duration_seconds, file_size_mb, resolution, source)
-                VALUES (?, ?, ?, 'ready', ?, ?, ?, ?, 'local')
-            """, (user_id, name, file_path, description, duration_seconds, file_size_mb, resolution))
+            if self.db_adapter.db_type == "postgresql":
+                cursor.execute("""
+                    INSERT INTO videos (user_id, name, file_path, status, description,
+                                      duration_seconds, file_size_mb, resolution, source)
+                    VALUES (?, ?, ?, 'ready', ?, ?, ?, ?, 'local')
+                    RETURNING id
+                """, (user_id, name, file_path, description, duration_seconds, file_size_mb, resolution))
+                result = cursor.fetchone()
+                video_id = result['id'] if result else -1
+            else:
+                cursor.execute("""
+                    INSERT INTO videos (user_id, name, file_path, status, description,
+                                      duration_seconds, file_size_mb, resolution, source)
+                    VALUES (?, ?, ?, 'ready', ?, ?, ?, ?, 'local')
+                """, (user_id, name, file_path, description, duration_seconds, file_size_mb, resolution))
+                video_id = cursor.lastrowid
 
-            video_id = cursor.lastrowid
             self.db_adapter.commit()
             return video_id
         except Exception as e:
@@ -768,15 +798,27 @@ class DatabaseManager:
             conn = self._get_connection()
             cursor = self.db_adapter.cursor()
 
-            cursor.execute("""
-                INSERT INTO videos (user_id, name, file_path, drive_file_id, drive_web_link,
-                                  source, status, description, duration_seconds,
-                                  file_size_mb, resolution)
-                VALUES (?, ?, ?, ?, ?, 'drive', 'ready', ?, ?, ?, ?)
-            """, (user_id, name, file_path, drive_file_id, drive_web_link, description,
-                  duration_seconds, file_size_mb, resolution))
+            if self.db_adapter.db_type == "postgresql":
+                cursor.execute("""
+                    INSERT INTO videos (user_id, name, file_path, drive_file_id, drive_web_link,
+                                      source, status, description, duration_seconds,
+                                      file_size_mb, resolution)
+                    VALUES (?, ?, ?, ?, ?, 'drive', 'ready', ?, ?, ?, ?)
+                    RETURNING id
+                """, (user_id, name, file_path, drive_file_id, drive_web_link, description,
+                      duration_seconds, file_size_mb, resolution))
+                result = cursor.fetchone()
+                video_id = result['id'] if result else -1
+            else:
+                cursor.execute("""
+                    INSERT INTO videos (user_id, name, file_path, drive_file_id, drive_web_link,
+                                      source, status, description, duration_seconds,
+                                      file_size_mb, resolution)
+                    VALUES (?, ?, ?, ?, ?, 'drive', 'ready', ?, ?, ?, ?)
+                """, (user_id, name, file_path, drive_file_id, drive_web_link, description,
+                      duration_seconds, file_size_mb, resolution))
+                video_id = cursor.lastrowid
 
-            video_id = cursor.lastrowid
             self.db_adapter.commit()
             return video_id
         except Exception as e:
@@ -785,20 +827,14 @@ class DatabaseManager:
 
     def get_videos(self, user_id: int) -> pd.DataFrame:
         """Get all videos for a specific user as DataFrame"""
-        conn = self._get_pandas_connection()
-        try:
-            df = pd.read_sql_query("""
-                SELECT id, name, file_path, status, description,
-                       duration_seconds as duration, file_size_mb as size_mb,
-                       resolution, uploaded_at
-                FROM videos
-                WHERE user_id = ?
-                ORDER BY uploaded_at DESC
-            """, conn, params=(user_id,))
-            return df
-        finally:
-            if self.db_adapter.db_type == "sqlite":
-                conn.close()
+        return self._read_sql_query("""
+            SELECT id, name, file_path, status, description,
+                   duration_seconds as duration, file_size_mb as size_mb,
+                   resolution, uploaded_at
+            FROM videos
+            WHERE user_id = ?
+            ORDER BY uploaded_at DESC
+        """, params=(user_id,))
 
     def delete_video(self, user_id: int, video_id: int) -> bool:
         """Delete a video for a specific user"""
@@ -842,15 +878,27 @@ class DatabaseManager:
             conn = self._get_connection()
             cursor = self.db_adapter.cursor()
 
-            cursor.execute("""
-                INSERT INTO analysis_results
-                (cuj_id, video_id, model_used, status, friction_score, confidence_score,
-                 observation, recommendation, key_moments, cost, raw_response)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (cuj_id, video_id, model_used, status, friction_score, confidence_score,
-                  observation, recommendation, key_moments, cost, raw_response))
+            if self.db_adapter.db_type == "postgresql":
+                cursor.execute("""
+                    INSERT INTO analysis_results
+                    (cuj_id, video_id, model_used, status, friction_score, confidence_score,
+                     observation, recommendation, key_moments, cost, raw_response)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    RETURNING id
+                """, (cuj_id, video_id, model_used, status, friction_score, confidence_score,
+                      observation, recommendation, key_moments, cost, raw_response))
+                result = cursor.fetchone()
+                analysis_id = result['id'] if result else -1
+            else:
+                cursor.execute("""
+                    INSERT INTO analysis_results
+                    (cuj_id, video_id, model_used, status, friction_score, confidence_score,
+                     observation, recommendation, key_moments, cost, raw_response)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (cuj_id, video_id, model_used, status, friction_score, confidence_score,
+                      observation, recommendation, key_moments, cost, raw_response))
+                analysis_id = cursor.lastrowid
 
-            analysis_id = cursor.lastrowid
             self.db_adapter.commit()
             return analysis_id
         except Exception as e:
@@ -859,8 +907,6 @@ class DatabaseManager:
 
     def get_analysis_results(self, user_id: int, limit: Optional[int] = None) -> pd.DataFrame:
         """Get analysis results for a specific user as DataFrame"""
-        conn = self._get_pandas_connection()
-
         query = """
             SELECT
                 ar.id,
@@ -892,12 +938,7 @@ class DatabaseManager:
         if limit:
             query += f" LIMIT {limit}"
 
-        try:
-            df = pd.read_sql_query(query, conn, params=(user_id,))
-            return df
-        finally:
-            if self.db_adapter.db_type == "sqlite":
-                conn.close()
+        return self._read_sql_query(query, params=(user_id,))
 
     def get_latest_results(self, user_id: int) -> Dict:
         """Get latest analysis results for a specific user as dictionary keyed by CUJ ID"""
@@ -1051,8 +1092,13 @@ class DatabaseManager:
             conn = self._get_connection()
             cursor = self.db_adapter.cursor()
 
-            cursor.execute("INSERT INTO sessions (name) VALUES (?)", (name,))
-            session_id = cursor.lastrowid
+            if self.db_adapter.db_type == "postgresql":
+                cursor.execute("INSERT INTO sessions (name) VALUES (?) RETURNING id", (name,))
+                result = cursor.fetchone()
+                session_id = result['id'] if result else -1
+            else:
+                cursor.execute("INSERT INTO sessions (name) VALUES (?)", (name,))
+                session_id = cursor.lastrowid
 
             self.db_adapter.commit()
             return session_id
@@ -1121,11 +1167,20 @@ class DatabaseManager:
         try:
             conn = self._get_connection()
             cursor = self.db_adapter.cursor()
-            cursor.execute("""
-                INSERT INTO youtube_api_keys (user_id, api_key, key_name)
-                VALUES (?, ?, ?)
-            """, (user_id, api_key, key_name))
-            key_id = cursor.lastrowid
+            if self.db_adapter.db_type == "postgresql":
+                cursor.execute("""
+                    INSERT INTO youtube_api_keys (user_id, api_key, key_name)
+                    VALUES (?, ?, ?)
+                    RETURNING id
+                """, (user_id, api_key, key_name))
+                result = cursor.fetchone()
+                key_id = result['id'] if result else -1
+            else:
+                cursor.execute("""
+                    INSERT INTO youtube_api_keys (user_id, api_key, key_name)
+                    VALUES (?, ?, ?)
+                """, (user_id, api_key, key_name))
+                key_id = cursor.lastrowid
             self.db_adapter.commit()
             return key_id
         except Exception as e:
@@ -1291,12 +1346,21 @@ class DatabaseManager:
             conn = self._get_connection()
             cursor = self.db_adapter.cursor()
 
-            cursor.execute("""
-                INSERT INTO briefs (user_id, name, description, brand_context, status, updated_at)
-                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            """, (user_id, name, description, brand_context, status))
+            if self.db_adapter.db_type == "postgresql":
+                cursor.execute("""
+                    INSERT INTO briefs (user_id, name, description, brand_context, status, updated_at)
+                    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    RETURNING id
+                """, (user_id, name, description, brand_context, status))
+                result = cursor.fetchone()
+                brief_id = result['id'] if result else -1
+            else:
+                cursor.execute("""
+                    INSERT INTO briefs (user_id, name, description, brand_context, status, updated_at)
+                    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """, (user_id, name, description, brand_context, status))
+                brief_id = cursor.lastrowid
 
-            brief_id = cursor.lastrowid
             self.db_adapter.commit()
             return brief_id
         except Exception as e:
@@ -1305,18 +1369,12 @@ class DatabaseManager:
 
     def get_briefs(self, user_id: int) -> pd.DataFrame:
         """Get all briefs for a specific user"""
-        conn = self._get_pandas_connection()
-        try:
-            df = pd.read_sql_query("""
-                SELECT id, name, description, brand_context, status, created_at, updated_at
-                FROM briefs
-                WHERE user_id = ?
-                ORDER BY updated_at DESC
-            """, conn, params=(user_id,))
-            return df
-        finally:
-            if self.db_adapter.db_type == "sqlite":
-                conn.close()
+        return self._read_sql_query("""
+            SELECT id, name, description, brand_context, status, created_at, updated_at
+            FROM briefs
+            WHERE user_id = ?
+            ORDER BY updated_at DESC
+        """, params=(user_id,))
 
     def get_brief(self, brief_id: int) -> Optional[Dict]:
         """Get a specific brief by ID"""
@@ -1407,12 +1465,21 @@ class DatabaseManager:
             conn = self._get_connection()
             cursor = self.db_adapter.cursor()
 
-            cursor.execute("""
-                INSERT INTO creators (user_id, name, primary_platform, notes, tags, updated_at)
-                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            """, (user_id, name, primary_platform, notes, tags))
+            if self.db_adapter.db_type == "postgresql":
+                cursor.execute("""
+                    INSERT INTO creators (user_id, name, primary_platform, notes, tags, updated_at)
+                    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    RETURNING id
+                """, (user_id, name, primary_platform, notes, tags))
+                result = cursor.fetchone()
+                creator_id = result['id'] if result else -1
+            else:
+                cursor.execute("""
+                    INSERT INTO creators (user_id, name, primary_platform, notes, tags, updated_at)
+                    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """, (user_id, name, primary_platform, notes, tags))
+                creator_id = cursor.lastrowid
 
-            creator_id = cursor.lastrowid
             self.db_adapter.commit()
             return creator_id
         except Exception as e:
@@ -1421,18 +1488,12 @@ class DatabaseManager:
 
     def get_creators(self, user_id: int) -> pd.DataFrame:
         """Get all creators for a specific user"""
-        conn = self._get_pandas_connection()
-        try:
-            df = pd.read_sql_query("""
-                SELECT id, name, primary_platform, notes, tags, created_at, updated_at
-                FROM creators
-                WHERE user_id = ?
-                ORDER BY created_at DESC
-            """, conn, params=(user_id,))
-            return df
-        finally:
-            if self.db_adapter.db_type == "sqlite":
-                conn.close()
+        return self._read_sql_query("""
+            SELECT id, name, primary_platform, notes, tags, created_at, updated_at
+            FROM creators
+            WHERE user_id = ?
+            ORDER BY created_at DESC
+        """, params=(user_id,))
 
     def get_creator(self, creator_id: int) -> Optional[Dict]:
         """Get a specific creator by ID"""
@@ -1471,19 +1532,13 @@ class DatabaseManager:
 
     def get_creators_for_brief(self, brief_id: int) -> pd.DataFrame:
         """Get all creators linked to a specific brief"""
-        conn = self._get_pandas_connection()
-        try:
-            df = pd.read_sql_query("""
-                SELECT c.id, c.name, c.primary_platform, c.notes, c.tags, bc.status as brief_status, bc.added_at
-                FROM creators c
-                JOIN brief_creators bc ON c.id = bc.creator_id
-                WHERE bc.brief_id = ?
-                ORDER BY bc.added_at DESC
-            """, conn, params=(brief_id,))
-            return df
-        finally:
-            if self.db_adapter.db_type == "sqlite":
-                conn.close()
+        return self._read_sql_query("""
+            SELECT c.id, c.name, c.primary_platform, c.notes, c.tags, bc.status as brief_status, bc.added_at
+            FROM creators c
+            JOIN brief_creators bc ON c.id = bc.creator_id
+            WHERE bc.brief_id = ?
+            ORDER BY bc.added_at DESC
+        """, params=(brief_id,))
 
     def delete_creator(self, user_id: int, creator_id: int) -> bool:
         """Delete a creator"""
@@ -1507,13 +1562,23 @@ class DatabaseManager:
             conn = self._get_connection()
             cursor = self.db_adapter.cursor()
 
-            cursor.execute("""
-                INSERT INTO social_accounts
-                (creator_id, platform, platform_user_id, handle, profile_url, verified, discovery_method)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (creator_id, platform, platform_user_id, handle, profile_url, verified, discovery_method))
+            if self.db_adapter.db_type == "postgresql":
+                cursor.execute("""
+                    INSERT INTO social_accounts
+                    (creator_id, platform, platform_user_id, handle, profile_url, verified, discovery_method)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    RETURNING id
+                """, (creator_id, platform, platform_user_id, handle, profile_url, verified, discovery_method))
+                result = cursor.fetchone()
+                account_id = result['id'] if result else -1
+            else:
+                cursor.execute("""
+                    INSERT INTO social_accounts
+                    (creator_id, platform, platform_user_id, handle, profile_url, verified, discovery_method)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (creator_id, platform, platform_user_id, handle, profile_url, verified, discovery_method))
+                account_id = cursor.lastrowid
 
-            account_id = cursor.lastrowid
             self.db_adapter.commit()
             return account_id
         except Exception as e:
@@ -1525,19 +1590,13 @@ class DatabaseManager:
         # Convert numpy types to native Python int
         creator_id = int(creator_id)
 
-        conn = self._get_pandas_connection()
-        try:
-            df = pd.read_sql_query("""
-                SELECT id, platform, platform_user_id, handle, profile_url,
-                       verified, discovery_method, last_fetched_at, created_at
-                FROM social_accounts
-                WHERE creator_id = ?
-                ORDER BY created_at
-            """, conn, params=(creator_id,))
-            return df
-        finally:
-            if self.db_adapter.db_type == "sqlite":
-                conn.close()
+        return self._read_sql_query("""
+            SELECT id, platform, platform_user_id, handle, profile_url,
+                   verified, discovery_method, last_fetched_at, created_at
+            FROM social_accounts
+            WHERE creator_id = ?
+            ORDER BY created_at
+        """, params=(creator_id,))
 
     def update_social_account_fetch_time(self, account_id: int) -> bool:
         """Update last_fetched_at timestamp for a social account"""
@@ -1563,27 +1622,51 @@ class DatabaseManager:
             conn = self._get_connection()
             cursor = self.db_adapter.cursor()
 
-            cursor.execute("""
-                INSERT INTO platform_analytics
-                (social_account_id, snapshot_date, followers_count, following_count,
-                 total_posts, avg_likes, avg_comments, avg_shares, engagement_rate,
-                 demographics_data, raw_data, data_source)
-                VALUES (?, DATE('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                social_account_id,
-                analytics_data.get('followers_count', 0),
-                analytics_data.get('following_count', 0),
-                analytics_data.get('total_posts', 0),
-                analytics_data.get('avg_likes', 0.0),
-                analytics_data.get('avg_comments', 0.0),
-                analytics_data.get('avg_shares', 0.0),
-                analytics_data.get('engagement_rate', 0.0),
-                json.dumps(analytics_data.get('demographics', {})),
-                json.dumps(analytics_data.get('raw_data', {})),
-                analytics_data.get('data_source', 'unknown')
-            ))
+            if self.db_adapter.db_type == "postgresql":
+                cursor.execute("""
+                    INSERT INTO platform_analytics
+                    (social_account_id, snapshot_date, followers_count, following_count,
+                     total_posts, avg_likes, avg_comments, avg_shares, engagement_rate,
+                     demographics_data, raw_data, data_source)
+                    VALUES (?, DATE('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    RETURNING id
+                """, (
+                    social_account_id,
+                    analytics_data.get('followers_count', 0),
+                    analytics_data.get('following_count', 0),
+                    analytics_data.get('total_posts', 0),
+                    analytics_data.get('avg_likes', 0.0),
+                    analytics_data.get('avg_comments', 0.0),
+                    analytics_data.get('avg_shares', 0.0),
+                    analytics_data.get('engagement_rate', 0.0),
+                    json.dumps(analytics_data.get('demographics', {})),
+                    json.dumps(analytics_data.get('raw_data', {})),
+                    analytics_data.get('data_source', 'unknown')
+                ))
+                result = cursor.fetchone()
+                analytics_id = result['id'] if result else -1
+            else:
+                cursor.execute("""
+                    INSERT INTO platform_analytics
+                    (social_account_id, snapshot_date, followers_count, following_count,
+                     total_posts, avg_likes, avg_comments, avg_shares, engagement_rate,
+                     demographics_data, raw_data, data_source)
+                    VALUES (?, DATE('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    social_account_id,
+                    analytics_data.get('followers_count', 0),
+                    analytics_data.get('following_count', 0),
+                    analytics_data.get('total_posts', 0),
+                    analytics_data.get('avg_likes', 0.0),
+                    analytics_data.get('avg_comments', 0.0),
+                    analytics_data.get('avg_shares', 0.0),
+                    analytics_data.get('engagement_rate', 0.0),
+                    json.dumps(analytics_data.get('demographics', {})),
+                    json.dumps(analytics_data.get('raw_data', {})),
+                    analytics_data.get('data_source', 'unknown')
+                ))
+                analytics_id = cursor.lastrowid
 
-            analytics_id = cursor.lastrowid
             self.db_adapter.commit()
             return analytics_id
         except Exception as e:
@@ -1704,26 +1787,49 @@ class DatabaseManager:
             conn = self._get_connection()
             cursor = self.db_adapter.cursor()
 
-            cursor.execute("""
-                INSERT INTO creator_reports
-                (brief_id, creator_id, overall_score, natural_alignment_score, summary, strengths, concerns,
-                 recommendations, analysis_cost, model_used, video_insights)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                brief_id,
-                creator_id,
-                report_data.get('overall_score', 0.0),
-                report_data.get('natural_alignment_score', 0.0),
-                report_data.get('summary', ''),
-                json.dumps(report_data.get('strengths', [])),
-                json.dumps(report_data.get('concerns', [])),
-                json.dumps(report_data.get('recommendations', [])),
-                report_data.get('analysis_cost', 0.0),
-                report_data.get('model_used', ''),
-                json.dumps(report_data.get('video_insights', []))
-            ))
+            if self.db_adapter.db_type == "postgresql":
+                cursor.execute("""
+                    INSERT INTO creator_reports
+                    (brief_id, creator_id, overall_score, natural_alignment_score, summary, strengths, concerns,
+                     recommendations, analysis_cost, model_used, video_insights)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    RETURNING id
+                """, (
+                    brief_id,
+                    creator_id,
+                    report_data.get('overall_score', 0.0),
+                    report_data.get('natural_alignment_score', 0.0),
+                    report_data.get('summary', ''),
+                    json.dumps(report_data.get('strengths', [])),
+                    json.dumps(report_data.get('concerns', [])),
+                    json.dumps(report_data.get('recommendations', [])),
+                    report_data.get('analysis_cost', 0.0),
+                    report_data.get('model_used', ''),
+                    json.dumps(report_data.get('video_insights', []))
+                ))
+                result = cursor.fetchone()
+                report_id = result['id'] if result else -1
+            else:
+                cursor.execute("""
+                    INSERT INTO creator_reports
+                    (brief_id, creator_id, overall_score, natural_alignment_score, summary, strengths, concerns,
+                     recommendations, analysis_cost, model_used, video_insights)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    brief_id,
+                    creator_id,
+                    report_data.get('overall_score', 0.0),
+                    report_data.get('natural_alignment_score', 0.0),
+                    report_data.get('summary', ''),
+                    json.dumps(report_data.get('strengths', [])),
+                    json.dumps(report_data.get('concerns', [])),
+                    json.dumps(report_data.get('recommendations', [])),
+                    report_data.get('analysis_cost', 0.0),
+                    report_data.get('model_used', ''),
+                    json.dumps(report_data.get('video_insights', []))
+                ))
+                report_id = cursor.lastrowid
 
-            report_id = cursor.lastrowid
             self.db_adapter.commit()
             return report_id
         except Exception as e:
@@ -1767,19 +1873,13 @@ class DatabaseManager:
 
     def get_reports_for_brief(self, brief_id: int) -> pd.DataFrame:
         """Get all reports for a brief"""
-        conn = self._get_pandas_connection()
-        try:
-            df = pd.read_sql_query("""
-                SELECT cr.*, c.name as creator_name, c.primary_platform
-                FROM creator_reports cr
-                JOIN creators c ON cr.creator_id = c.id
-                WHERE cr.brief_id = ?
-                ORDER BY cr.generated_at DESC
-            """, conn, params=(brief_id,))
-            return df
-        finally:
-            if self.db_adapter.db_type == "sqlite":
-                conn.close()
+        return self._read_sql_query("""
+            SELECT cr.*, c.name as creator_name, c.primary_platform
+            FROM creator_reports cr
+            JOIN creators c ON cr.creator_id = c.id
+            WHERE cr.brief_id = ?
+            ORDER BY cr.generated_at DESC
+        """, params=(brief_id,))
 
     def delete_creator_report(self, report_id: int, user_id: int) -> bool:
         """
@@ -1825,31 +1925,59 @@ class DatabaseManager:
             conn = self._get_connection()
             cursor = self.db_adapter.cursor()
 
-            cursor.execute("""
-                INSERT INTO post_analysis
-                (social_account_id, post_id, post_url, post_date, post_type, caption,
-                 likes_count, comments_count, shares_count, views_count, duration_seconds,
-                 sentiment_score, content_themes, brand_safety_score, natural_alignment_score)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                social_account_id,
-                post_data.get('post_id', ''),
-                post_data.get('post_url', ''),
-                post_data.get('post_date'),
-                post_data.get('post_type', ''),
-                post_data.get('caption', ''),
-                post_data.get('likes_count', 0),
-                post_data.get('comments_count', 0),
-                post_data.get('shares_count', 0),
-                post_data.get('views_count', 0),
-                post_data.get('duration_seconds', 0.0),
-                post_data.get('sentiment_score', 0.0),
-                json.dumps(post_data.get('content_themes', [])),
-                post_data.get('brand_safety_score', 0.0),
-                post_data.get('natural_alignment_score', 0.0)
-            ))
+            if self.db_adapter.db_type == "postgresql":
+                cursor.execute("""
+                    INSERT INTO post_analysis
+                    (social_account_id, post_id, post_url, post_date, post_type, caption,
+                     likes_count, comments_count, shares_count, views_count, duration_seconds,
+                     sentiment_score, content_themes, brand_safety_score, natural_alignment_score)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    RETURNING id
+                """, (
+                    social_account_id,
+                    post_data.get('post_id', ''),
+                    post_data.get('post_url', ''),
+                    post_data.get('post_date'),
+                    post_data.get('post_type', ''),
+                    post_data.get('caption', ''),
+                    post_data.get('likes_count', 0),
+                    post_data.get('comments_count', 0),
+                    post_data.get('shares_count', 0),
+                    post_data.get('views_count', 0),
+                    post_data.get('duration_seconds', 0.0),
+                    post_data.get('sentiment_score', 0.0),
+                    json.dumps(post_data.get('content_themes', [])),
+                    post_data.get('brand_safety_score', 0.0),
+                    post_data.get('natural_alignment_score', 0.0)
+                ))
+                result = cursor.fetchone()
+                post_analysis_id = result['id'] if result else -1
+            else:
+                cursor.execute("""
+                    INSERT INTO post_analysis
+                    (social_account_id, post_id, post_url, post_date, post_type, caption,
+                     likes_count, comments_count, shares_count, views_count, duration_seconds,
+                     sentiment_score, content_themes, brand_safety_score, natural_alignment_score)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    social_account_id,
+                    post_data.get('post_id', ''),
+                    post_data.get('post_url', ''),
+                    post_data.get('post_date'),
+                    post_data.get('post_type', ''),
+                    post_data.get('caption', ''),
+                    post_data.get('likes_count', 0),
+                    post_data.get('comments_count', 0),
+                    post_data.get('shares_count', 0),
+                    post_data.get('views_count', 0),
+                    post_data.get('duration_seconds', 0.0),
+                    post_data.get('sentiment_score', 0.0),
+                    json.dumps(post_data.get('content_themes', [])),
+                    post_data.get('brand_safety_score', 0.0),
+                    post_data.get('natural_alignment_score', 0.0)
+                ))
+                post_analysis_id = cursor.lastrowid
 
-            post_analysis_id = cursor.lastrowid
             self.db_adapter.commit()
             return post_analysis_id
         except Exception as e:
@@ -1858,18 +1986,12 @@ class DatabaseManager:
 
     def get_posts_for_account(self, social_account_id: int, limit: int = 50) -> pd.DataFrame:
         """Get analyzed posts for a social account"""
-        conn = self._get_pandas_connection()
-        try:
-            df = pd.read_sql_query("""
-                SELECT * FROM post_analysis
-                WHERE social_account_id = ?
-                ORDER BY post_date DESC
-                LIMIT ?
-            """, conn, params=(social_account_id, limit))
-            return df
-        finally:
-            if self.db_adapter.db_type == "sqlite":
-                conn.close()
+        return self._read_sql_query("""
+            SELECT * FROM post_analysis
+            WHERE social_account_id = ?
+            ORDER BY post_date DESC
+            LIMIT ?
+        """, params=(social_account_id, limit))
 
     # === Deep Research Methods ===
 
@@ -1900,31 +2022,59 @@ class DatabaseManager:
         conn = self._get_connection()
         cursor = self.db_adapter.cursor()
 
-        cursor.execute("""
-            INSERT INTO deep_research_queries (
-                query_hash, query_text, query_type, creator_id, social_account_id,
-                interaction_id, status, result_data, citations, cost,
-                input_tokens, output_tokens, completed_at, expires_at, error_message
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            query_data['query_hash'],
-            query_data['query_text'],
-            query_data['query_type'],
-            query_data.get('creator_id'),
-            query_data.get('social_account_id'),
-            query_data.get('interaction_id', ''),
-            query_data.get('status', 'pending'),
-            json.dumps(query_data.get('result_data')) if query_data.get('result_data') else None,
-            json.dumps(query_data.get('citations')) if query_data.get('citations') else None,
-            query_data.get('cost', 0.0),
-            query_data.get('input_tokens', 0),
-            query_data.get('output_tokens', 0),
-            datetime.now() if query_data.get('status') == 'completed' else None,
-            query_data.get('expires_at'),
-            query_data.get('error_message')
-        ))
+        if self.db_adapter.db_type == "postgresql":
+            cursor.execute("""
+                INSERT INTO deep_research_queries (
+                    query_hash, query_text, query_type, creator_id, social_account_id,
+                    interaction_id, status, result_data, citations, cost,
+                    input_tokens, output_tokens, completed_at, expires_at, error_message
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                RETURNING id
+            """, (
+                query_data['query_hash'],
+                query_data['query_text'],
+                query_data['query_type'],
+                query_data.get('creator_id'),
+                query_data.get('social_account_id'),
+                query_data.get('interaction_id', ''),
+                query_data.get('status', 'pending'),
+                json.dumps(query_data.get('result_data')) if query_data.get('result_data') else None,
+                json.dumps(query_data.get('citations')) if query_data.get('citations') else None,
+                query_data.get('cost', 0.0),
+                query_data.get('input_tokens', 0),
+                query_data.get('output_tokens', 0),
+                datetime.now() if query_data.get('status') == 'completed' else None,
+                query_data.get('expires_at'),
+                query_data.get('error_message')
+            ))
+            result = cursor.fetchone()
+            query_id = result['id'] if result else -1
+        else:
+            cursor.execute("""
+                INSERT INTO deep_research_queries (
+                    query_hash, query_text, query_type, creator_id, social_account_id,
+                    interaction_id, status, result_data, citations, cost,
+                    input_tokens, output_tokens, completed_at, expires_at, error_message
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                query_data['query_hash'],
+                query_data['query_text'],
+                query_data['query_type'],
+                query_data.get('creator_id'),
+                query_data.get('social_account_id'),
+                query_data.get('interaction_id', ''),
+                query_data.get('status', 'pending'),
+                json.dumps(query_data.get('result_data')) if query_data.get('result_data') else None,
+                json.dumps(query_data.get('citations')) if query_data.get('citations') else None,
+                query_data.get('cost', 0.0),
+                query_data.get('input_tokens', 0),
+                query_data.get('output_tokens', 0),
+                datetime.now() if query_data.get('status') == 'completed' else None,
+                query_data.get('expires_at'),
+                query_data.get('error_message')
+            ))
+            query_id = cursor.lastrowid
 
-        query_id = cursor.lastrowid
         self.db_adapter.commit()
         return query_id
 
@@ -1984,24 +2134,18 @@ class DatabaseManager:
         Returns:
             DataFrame of queries
         """
-        conn = self._get_pandas_connection()
-        try:
-            if query_type:
-                df = pd.read_sql_query("""
-                    SELECT * FROM deep_research_queries
-                    WHERE creator_id = ? AND query_type = ?
-                    ORDER BY created_at DESC
-                """, conn, params=(creator_id, query_type))
-            else:
-                df = pd.read_sql_query("""
-                    SELECT * FROM deep_research_queries
-                    WHERE creator_id = ?
-                    ORDER BY created_at DESC
-                """, conn, params=(creator_id,))
-            return df
-        finally:
-            if self.db_adapter.db_type == "sqlite":
-                conn.close()
+        if query_type:
+            return self._read_sql_query("""
+                SELECT * FROM deep_research_queries
+                WHERE creator_id = ? AND query_type = ?
+                ORDER BY created_at DESC
+            """, params=(creator_id, query_type))
+        else:
+            return self._read_sql_query("""
+                SELECT * FROM deep_research_queries
+                WHERE creator_id = ?
+                ORDER BY created_at DESC
+            """, params=(creator_id,))
 
     def save_demographics_data(self, social_account_id: int, demographics: Dict):
         """
@@ -2136,21 +2280,39 @@ class DatabaseManager:
         conn = self._get_connection()
         cursor = self.db_adapter.cursor()
 
-        cursor.execute("""
-            INSERT INTO campaign_assets (
+        if self.db_adapter.db_type == "postgresql":
+            cursor.execute("""
+                INSERT INTO campaign_assets (
+                    user_id, brief_id, creator_id, asset_type, asset_subtype,
+                    file_path, thumbnail_path, prompt_used, model_used,
+                    generation_params, cost, status, error_message, metadata
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                RETURNING id
+            """, (
                 user_id, brief_id, creator_id, asset_type, asset_subtype,
                 file_path, thumbnail_path, prompt_used, model_used,
-                generation_params, cost, status, error_message, metadata
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            user_id, brief_id, creator_id, asset_type, asset_subtype,
-            file_path, thumbnail_path, prompt_used, model_used,
-            json.dumps(generation_params) if generation_params else None,
-            cost, status, error_message,
-            json.dumps(metadata) if metadata else None
-        ))
+                json.dumps(generation_params) if generation_params else None,
+                cost, status, error_message,
+                json.dumps(metadata) if metadata else None
+            ))
+            result = cursor.fetchone()
+            asset_id = result['id'] if result else -1
+        else:
+            cursor.execute("""
+                INSERT INTO campaign_assets (
+                    user_id, brief_id, creator_id, asset_type, asset_subtype,
+                    file_path, thumbnail_path, prompt_used, model_used,
+                    generation_params, cost, status, error_message, metadata
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                user_id, brief_id, creator_id, asset_type, asset_subtype,
+                file_path, thumbnail_path, prompt_used, model_used,
+                json.dumps(generation_params) if generation_params else None,
+                cost, status, error_message,
+                json.dumps(metadata) if metadata else None
+            ))
+            asset_id = cursor.lastrowid
 
-        asset_id = cursor.lastrowid
         self.db_adapter.commit()
 
         return asset_id
@@ -2174,8 +2336,6 @@ class DatabaseManager:
         Returns:
             DataFrame of assets
         """
-        conn = self._get_pandas_connection()
-
         query = "SELECT * FROM campaign_assets WHERE user_id = ?"
         params = [user_id]
 
@@ -2193,12 +2353,7 @@ class DatabaseManager:
 
         query += " ORDER BY created_at DESC"
 
-        try:
-            df = pd.read_sql_query(query, conn, params=params)
-            return df
-        finally:
-            if self.db_adapter.db_type == "sqlite":
-                conn.close()
+        return self._read_sql_query(query, params=tuple(params))
 
     def get_campaign_asset(self, asset_id: int) -> Optional[dict]:
         """
