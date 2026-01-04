@@ -884,7 +884,8 @@ Focus on visual elements, tone, and overall presentation quality."""
                         creator_name=creator_name,
                         platform=platform,
                         profile_url=profile_url,
-                        timeout=1800  # 30 minutes max
+                        timeout=1800,  # 30 minutes max
+                        db_manager=self.db  # Pass DB manager for connection refresh
                     )
                     _debug_log_demographics(f"Deep Research API returned status: {result.get('status', 'unknown')}")
 

@@ -225,13 +225,14 @@ class DeepResearchClient:
         except Exception as e:
             raise DeepResearchError(f"Failed to start research: {e}")
 
-    def poll_research(self, interaction_id: str, timeout: int = 1800) -> Dict:
+    def poll_research(self, interaction_id: str, timeout: int = 1800, db_manager=None) -> Dict:
         """
         Poll for research completion (blocking)
 
         Args:
             interaction_id: ID from start_research()
             timeout: Maximum time to wait in seconds (default 30 minutes)
+            db_manager: Optional DatabaseManager instance for connection refresh
 
         Returns:
             Research results dictionary with status and result
@@ -243,6 +244,13 @@ class DeepResearchClient:
             elapsed = time.time() - start_time
             if elapsed > timeout:
                 raise DeepResearchError(f"Research timeout after {timeout}s")
+
+            # Refresh database connection periodically to prevent timeouts
+            if db_manager:
+                try:
+                    db_manager.refresh_connection_if_needed(refresh_interval_seconds=300)
+                except Exception as refresh_error:
+                    print(f"  [WARNING] Failed to refresh DB connection: {refresh_error}")
 
             # Get current status
             try:
@@ -314,7 +322,8 @@ class DeepResearchClient:
         creator_name: str,
         platform: str,
         profile_url: str,
-        timeout: int = 1800
+        timeout: int = 1800,
+        db_manager=None
     ) -> Dict:
         """
         Research creator audience demographics
@@ -324,6 +333,7 @@ class DeepResearchClient:
             platform: Platform name (instagram, tiktok, etc.)
             profile_url: Profile URL
             timeout: Maximum wait time in seconds
+            db_manager: Optional DatabaseManager instance for connection refresh
 
         Returns:
             Demographic data dictionary
@@ -338,7 +348,7 @@ class DeepResearchClient:
         interaction_id = self.start_research(query)
         print(f"  [DEEP RESEARCH] Research started, ID: {interaction_id}")
 
-        result = self.poll_research(interaction_id, timeout=timeout)
+        result = self.poll_research(interaction_id, timeout=timeout, db_manager=db_manager)
 
         if result['status'] == 'failed':
             raise DeepResearchError(f"Research failed: {result.get('error', 'Unknown error')}")

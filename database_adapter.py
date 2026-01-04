@@ -2,6 +2,7 @@
 Database adapter layer for supporting both SQLite and PostgreSQL
 """
 from typing import Any, Optional, Tuple, List
+import time
 import config
 
 
@@ -92,6 +93,82 @@ class DatabaseAdapter:
 
         return self.conn
 
+    def reconnect(self):
+        """Reconnect to database (close existing connection and create new one)"""
+        try:
+            if self.conn:
+                self.conn.close()
+        except:
+            pass  # Ignore errors when closing dead connection
+
+        self.conn = None
+        return self.connect()
+
+    def is_connection_alive(self) -> bool:
+        """
+        Check if database connection is alive
+
+        Returns:
+            True if connection is alive and working, False otherwise
+        """
+        if not self.conn:
+            return False
+
+        try:
+            if self.db_type == "sqlite":
+                # For SQLite, just check if connection exists
+                cursor = self.conn.cursor()
+                cursor.execute("SELECT 1")
+                cursor.close()
+                return True
+            elif self.db_type == "postgresql":
+                # For PostgreSQL, check connection status and test with simple query
+                import psycopg2
+
+                # Check if connection is closed
+                if self.conn.closed:
+                    return False
+
+                # Test with a simple query
+                with self.conn.cursor() as cur:
+                    cur.execute("SELECT 1")
+                return True
+        except Exception as e:
+            print(f"[CONNECTION CHECK] Connection is not alive: {e}")
+            return False
+
+    def ensure_connection(self, max_retries: int = 3):
+        """
+        Ensure database connection is alive, reconnect if necessary
+
+        Args:
+            max_retries: Maximum number of reconnection attempts
+
+        Raises:
+            Exception if unable to establish connection after retries
+        """
+        if self.is_connection_alive():
+            return
+
+        for attempt in range(max_retries):
+            try:
+                print(f"[RECONNECT] Attempting to reconnect (attempt {attempt + 1}/{max_retries})...")
+                self.reconnect()
+
+                # Verify connection works
+                if self.is_connection_alive():
+                    print(f"[RECONNECT] Successfully reconnected!")
+                    return
+            except Exception as e:
+                print(f"[RECONNECT] Reconnection attempt {attempt + 1} failed: {e}")
+                if attempt < max_retries - 1:
+                    # Exponential backoff
+                    sleep_time = 2 ** attempt
+                    print(f"[RECONNECT] Waiting {sleep_time}s before retry...")
+                    time.sleep(sleep_time)
+
+        raise Exception(f"Failed to reconnect to database after {max_retries} attempts")
+
     def close(self):
         """Close database connection"""
         if self.conn:
@@ -100,8 +177,8 @@ class DatabaseAdapter:
 
     def cursor(self):
         """Get database cursor with adapter wrapper"""
-        if not self.conn:
-            self.connect()
+        # Ensure connection is alive before creating cursor
+        self.ensure_connection()
 
         if self.db_type == "sqlite":
             raw_cursor = self.conn.cursor()
@@ -121,6 +198,59 @@ class DatabaseAdapter:
         """Rollback transaction"""
         if self.conn:
             self.conn.rollback()
+
+    def execute_with_retry(self, operation, max_retries: int = 3):
+        """
+        Execute a database operation with automatic retry on connection errors
+
+        Args:
+            operation: Callable that performs the database operation
+            max_retries: Maximum number of retry attempts
+
+        Returns:
+            Result of the operation
+
+        Raises:
+            Exception if operation fails after all retries
+        """
+        if self.db_type == "sqlite":
+            # SQLite doesn't need retry logic for connection issues
+            return operation()
+
+        # PostgreSQL retry logic
+        import psycopg2
+
+        for attempt in range(max_retries):
+            try:
+                # Ensure connection before operation
+                self.ensure_connection()
+                return operation()
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                error_str = str(e).lower()
+                is_connection_error = any(keyword in error_str for keyword in [
+                    'closed', 'ssl', 'connection', 'server closed', 'terminated'
+                ])
+
+                if is_connection_error and attempt < max_retries - 1:
+                    print(f"[RETRY {attempt + 1}/{max_retries}] Connection error: {e}")
+                    print(f"[RETRY] Reconnecting and retrying operation...")
+
+                    # Force reconnection
+                    try:
+                        self.reconnect()
+                    except Exception as reconnect_error:
+                        print(f"[RETRY] Reconnection failed: {reconnect_error}")
+
+                    # Exponential backoff
+                    sleep_time = 2 ** attempt
+                    time.sleep(sleep_time)
+                    continue
+                else:
+                    # Not a connection error, or out of retries
+                    raise
+            except Exception as e:
+                # Other errors - don't retry
+                raise
 
     def convert_query(self, query: str) -> str:
         """

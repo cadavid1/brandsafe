@@ -26,6 +26,7 @@ class DatabaseManager:
         self._ensure_database_directory()
         self.db_adapter.connect()
         self._init_database()
+        self._last_connection_refresh = None
 
     def _ensure_database_directory(self):
         """Create database directory if it doesn't exist (SQLite only)"""
@@ -34,9 +35,39 @@ class DatabaseManager:
 
     def _get_connection(self):
         """Get database connection, ensuring it's open"""
-        if not self.db_adapter.conn:
-            self.db_adapter.connect()
+        # Ensure connection is alive (will reconnect if needed)
+        self.db_adapter.ensure_connection()
         return self.db_adapter.conn
+
+    def refresh_connection_if_needed(self, refresh_interval_seconds: int = 300):
+        """
+        Refresh database connection if it hasn't been refreshed recently
+        Useful for long-running operations to prevent connection timeouts
+
+        Args:
+            refresh_interval_seconds: Minimum seconds between refreshes (default: 5 minutes)
+        """
+        import time
+        from datetime import datetime
+
+        if config.DATABASE_TYPE != "postgresql":
+            # Only needed for PostgreSQL
+            return
+
+        now = time.time()
+        if self._last_connection_refresh is None:
+            self._last_connection_refresh = now
+            return
+
+        if now - self._last_connection_refresh > refresh_interval_seconds:
+            print(f"[CONNECTION REFRESH] Refreshing connection (last refresh: {int(now - self._last_connection_refresh)}s ago)")
+            try:
+                # Check if connection is alive, reconnect if not
+                self.db_adapter.ensure_connection()
+                self._last_connection_refresh = now
+                print(f"[CONNECTION REFRESH] Connection refreshed successfully")
+            except Exception as e:
+                print(f"[CONNECTION REFRESH] Failed to refresh connection: {e}")
 
     def _get_pandas_connection(self):
         """Get a fresh connection for pandas operations to avoid closed connection issues"""
@@ -1160,14 +1191,14 @@ class DatabaseManager:
 
     def get_setting(self, user_id: int, key: str, default: str = None) -> Optional[str]:
         """Get a setting value for a specific user"""
-        try:
-            conn = self._get_connection()
+        def _get_setting_operation():
             cursor = self.db_adapter.cursor()
-
             cursor.execute("SELECT value FROM settings WHERE user_id = ? AND key = ?", (user_id, key))
             row = cursor.fetchone()
-
             return row['value'] if row else default
+
+        try:
+            return self.db_adapter.execute_with_retry(_get_setting_operation)
         except Exception as e:
             print(f"Error getting setting: {e}")
             return default
@@ -2167,8 +2198,7 @@ class DatabaseManager:
             social_account_id: Social account ID
             demographics: Demographics dictionary
         """
-        try:
-            conn = self._get_connection()
+        def _save_operation():
             cursor = self.db_adapter.cursor()
 
             # Check if there's an existing analytics record for today
@@ -2200,6 +2230,9 @@ class DatabaseManager:
                 print(f"  [DB] Created new platform_analytics record with demographics for account_id={social_account_id}")
 
             self.db_adapter.commit()
+
+        try:
+            self.db_adapter.execute_with_retry(_save_operation)
         except Exception as e:
             print(f"  [DB ERROR] Failed to save demographics: {type(e).__name__}: {e}")
             raise
@@ -2214,8 +2247,7 @@ class DatabaseManager:
         Returns:
             Demographics dictionary or None
         """
-        try:
-            conn = self._get_connection()
+        def _get_operation():
             cursor = self.db_adapter.cursor()
 
             cursor.execute("""
@@ -2243,6 +2275,9 @@ class DatabaseManager:
                     print(f"  [DB ERROR] Failed to parse demographics JSON: {e}")
                     return None
             return None
+
+        try:
+            return self.db_adapter.execute_with_retry(_get_operation)
         except Exception as e:
             print(f"  [DB ERROR] Failed to retrieve demographics: {type(e).__name__}: {e}")
             return None
