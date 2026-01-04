@@ -525,12 +525,23 @@ class DatabaseManager:
             conn = self._get_connection()
             cursor = self.db_adapter.cursor()
 
-            cursor.execute("""
-                INSERT INTO users (email, username, password_hash, full_name)
-                VALUES (?, ?, ?, ?)
-            """, (email, username, password_hash, full_name))
+            if self.db_adapter.db_type == "postgresql":
+                # PostgreSQL requires RETURNING clause to get the inserted ID
+                cursor.execute("""
+                    INSERT INTO users (email, username, password_hash, full_name)
+                    VALUES (?, ?, ?, ?)
+                    RETURNING id
+                """, (email, username, password_hash, full_name))
+                result = cursor.fetchone()
+                user_id = result['id'] if result else None
+            else:
+                # SQLite uses lastrowid
+                cursor.execute("""
+                    INSERT INTO users (email, username, password_hash, full_name)
+                    VALUES (?, ?, ?, ?)
+                """, (email, username, password_hash, full_name))
+                user_id = cursor.lastrowid
 
-            user_id = cursor.lastrowid
             self.db_adapter.commit()
             return user_id
         except Exception as e:
