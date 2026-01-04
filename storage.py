@@ -72,6 +72,14 @@ class DatabaseManager:
             else:
                 df = pd.read_sql_query(converted_query, conn)
             return df
+        except Exception as e:
+            # For PostgreSQL, rollback the transaction on error
+            if self.db_adapter.db_type == "postgresql":
+                try:
+                    conn.rollback()
+                except:
+                    pass
+            raise
         finally:
             # Only close SQLite connections (PostgreSQL connection is managed elsewhere)
             if self.db_adapter.db_type == "sqlite":

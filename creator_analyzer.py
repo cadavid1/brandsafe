@@ -169,29 +169,7 @@ class CreatorAnalyzer:
 
             # Fetch brief
             print(f"[STEP 1/5] Loading brief information...")
-            conn = self.db._get_connection()
-            cursor = conn.cursor()
-
-            cursor.execute("""
-                SELECT id, user_id, name, description, brand_context, status, created_at, updated_at
-                FROM briefs WHERE id = ?
-            """, (brief_id,))
-            row = cursor.fetchone()
-            conn.close()
-
-            if row:
-                brief = {
-                    'id': row['id'],
-                    'user_id': row['user_id'],
-                    'name': row['name'],
-                    'description': row['description'],
-                    'brand_context': row['brand_context'],
-                    'status': row['status'],
-                    'created_at': row['created_at'],
-                    'updated_at': row['updated_at']
-                }
-            else:
-                brief = None
+            brief = self.db.get_brief(brief_id)
 
             if not brief:
                 raise CreatorAnalysisError(f"Brief not found: {brief_id}")
